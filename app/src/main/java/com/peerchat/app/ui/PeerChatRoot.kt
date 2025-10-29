@@ -512,6 +512,7 @@ private fun HomeTopBar(
                     enabled = !modelImportInProgress,
                     onClick = onImportModel
                 )
+                HomeActionChip(label = "Documents", onClick = onOpenDocuments)
                 HomeActionChip(label = "Models", onClick = onOpenModels)
                 IconButton(onClick = onOpenSettings) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings")
