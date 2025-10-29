@@ -14,11 +14,11 @@
 - **Observability**: persistent metrics (TTFS, TPS, context %, cache hits) per message; structured logs with retention policy.
 
 ## Current Baseline Snapshot
-- Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git remote initialized and first commit pushed.
-- Native layer wraps llama.cpp with Vulkan flags, structured streaming callbacks, stop-sequence handling, GGUF metadata extraction, and metrics surfaced via `EngineMetrics`.
-- Kotlin runtime (`EngineRuntime` + `StreamingEngine`) manages model lifecycle, streaming flows, and metrics propagation; Compose chat screen renders Markdown, captures reasoning blocks, and persists metrics/data via Room.
-- Data layer defines Room entities/DAOs for chats, messages, documents, embeddings, and RAG chunks; RagService provides naive chunking + cosine retrieval backed by on-device embeddings.
-- Model management UI, manifests, downloads, and storage policies still absent; Compose navigation is single-activity with large monolithic screen; docs/CI/tests remain unimplemented.
+- Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git history initialized.
+- Native engine (llama.cpp) supports Vulkan, structured streaming, metrics capture, KV snapshotting, and GGUF metadata detection exposed through `EngineRuntime`.
+- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore.
+- Data layer (Room v2) includes manifests, chats, documents, embeddings, and RAG chunks with migrations replacing destructive fallback; RagService still uses naive chunking + cosine retrieval.
+- Model settings dialog allows manual load/unload, thread/Vulkan tuning, and auto-registers imported GGUF files; download workflows, checksum verification, template selection, and navigation architecture remain outstanding.
 
 ## Workstreams & Key Tasks
 
@@ -28,16 +28,13 @@
 - Implement KV reuse support (forks, prompt caching), abort callbacks, and structured error surfaces to Kotlin.
 - Add Vulkan capability probing and graceful fallback toggles surfaced to model settings.
 
-### 2. Model Lifecycle & Storage
-- Define model manifest format (JSON) containing name, family, context, checksum, source URL, download size.
-- Implement local model discovery (app-private `files/models`, removable storage selection) with hash verification.
-- Build download manager (WorkManager foreground service) supporting pause/resume, checksum validation, retry/backoff.
-- Add default models catalog (from `defaultmodels.md`) with curated presets; allow user-provided manifests.
-- Create model settings UI: selection, metadata display, GPU layer configuration, reasoning flag, template assignment.
-- Persist per-model configuration/usage metrics; support migration when manifests update.
+### 2. Model Lifecycle & Storage (in progress)
+- Introduce `ModelManifest` schema persisted via Room/JSON for default and user imports (done).
+- Surface local discovery, metadata display, and selection from settings dialog (done) with Vulkan/thread tuning.
+- Next: integrate checksum verification, manifest-driven presets, and download workflow with WorkManager.
 
 ### 3. Data Persistence & Sync
-- Introduce Room migrations (v1→v2…) with schema validation tests; remove destructive fallback.
+- Room migration v1→v2 live (manifests table); need schema validation tests in CI.
 - Add converters for JSON blobs, ByteArray handling, embedding normalization metadata.
 - Implement DAO coverage for metrics updates, message fork lineage, model usage history, document states.
 - Provide repository layer (Kotlin) encapsulating suspend functions/Flows and transaction boundaries.
@@ -83,7 +80,7 @@
 3. Replace destructive migrations, add schema tests, and establish baseline CI workflow skeleton (Workstream 3/7).
 
 ### Phase 1 – Model Management & UI Core (Week 2)
-1. Implement model catalog UI, manifest-driven selection, and load/unload orchestration in-app.
+1. Finalize model catalog (manifest presets, checksum verification, download flows) and richer selection UX.
 2. Establish Navigation Compose shell, shared design system, and ViewModel-backed chat/home screens.
 3. Surface metrics overlays, message detail drawers, and reasoning timeline using existing engine metrics.
 
@@ -124,6 +121,6 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Extend native engine to expose KV reuse/prompt cache + enriched metrics (Workstream 1).
-2. Define model manifest schema, entities, and storage (Workstream 2), including discovery of sideloaded models.
-3. Stand up Navigation Compose scaffold with ViewModel-backed state and prep slots for model manager & documents screens (Workstream 5).
+1. Build manifest-driven model catalog UI: surface stored manifests, default presets, selection, and deletion with checksum validation (Workstream 2).
+2. Implement download pipeline (WorkManager + integrity verification) and metadata enrichment per manifest (Workstream 2/6).
+3. Begin Navigation Compose refactor with ViewModel-backed state to host forthcoming model manager and documents screens (Workstream 5).

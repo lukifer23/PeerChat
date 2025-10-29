@@ -23,6 +23,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Divider
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -30,9 +31,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.lifecycle.lifecycleScope
 import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.ModelConfigStore
+import com.peerchat.app.engine.ModelManifestService
 import com.peerchat.app.engine.ModelStateCache
 import com.peerchat.app.engine.ModelStorage
 import com.peerchat.app.engine.StreamingEngine
@@ -50,6 +55,8 @@ import dev.jeziellago.compose.markdowntext.MarkdownText
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.io.File
+import java.util.Locale
 import java.util.regex.Pattern
 
 class MainActivity : ComponentActivity() {
@@ -68,6 +75,23 @@ class MainActivity : ComponentActivity() {
                 val folders by foldersFlow.collectAsState(initial = emptyList())
                 val chatsFlow = remember(selectedFolder.value) { db.chatDao().observeByFolder(selectedFolder.value) }
                 val chats by chatsFlow.collectAsState(initial = emptyList())
+                val context = LocalContext.current
+                val coroutineScope = rememberCoroutineScope()
+                val engineStatus by EngineRuntime.status.collectAsState(initial = EngineRuntime.EngineStatus.Uninitialized)
+                val engineMetrics by EngineRuntime.metrics.collectAsState(initial = EngineMetrics.empty())
+                val modelMeta by EngineRuntime.modelMeta.collectAsState(initial = null)
+                val modelCache = remember { ModelStateCache(context) }
+                val manifestService = remember { ModelManifestService(context) }
+                val manifestsFlow = remember { manifestService.manifestsFlow() }
+                val manifests by manifestsFlow.collectAsState(initial = emptyList())
+                var storedConfig by remember { mutableStateOf(ModelConfigStore.load(context)) }
+                var modelPath by remember { mutableStateOf(storedConfig?.modelPath ?: "") }
+                var threadText by remember { mutableStateOf((storedConfig?.threads ?: 6).toString()) }
+                var contextText by remember { mutableStateOf((storedConfig?.contextLength ?: 4096).toString()) }
+                var gpuText by remember { mutableStateOf((storedConfig?.gpuLayers ?: 20).toString()) }
+                var useVulkan by remember { mutableStateOf(storedConfig?.useVulkan ?: true) }
+                var isLoadingModel by remember { mutableStateOf(false) }
+                var importingModel by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
                 var searchQuery by remember { mutableStateOf(TextFieldValue("")) }
                 var searchResults by remember { mutableStateOf(listOf<String>()) }
@@ -80,9 +104,8 @@ class MainActivity : ComponentActivity() {
                 var showNewChat by remember { mutableStateOf(false) }
                 var tempName by remember { mutableStateOf(TextFieldValue("")) }
                 // dialog states for chat actions (hoisted)
-                // Document picker
                 var indexing by rememberSaveable { mutableStateOf(false) }
-                val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                val documentImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
                     if (uri != null) {
                         lifecycleScope.launch {
                             indexing = true
@@ -149,6 +172,22 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                val modelImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    if (uri != null) {
+                        coroutineScope.launch {
+                            importingModel = true
+                            try {
+                                val path = ModelStorage.importModel(context, uri)
+                                if (!path.isNullOrEmpty()) {
+                                    modelPath = path
+                                    manifestService.ensureManifestFor(path)
+                                }
+                            } finally {
+                                importingModel = false
+                            }
+                        }
+                    }
+                }
                 val renameTargetId = remember { mutableStateOf<Long?>(null) }
                 val moveTargetId = remember { mutableStateOf<Long?>(null) }
                 val forkTargetId = remember { mutableStateOf<Long?>(null) }
@@ -196,29 +235,29 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Column(Modifier.fillMaxSize()) {
-                    androidx.compose.material3.CenterAlignedTopAppBar(title = { Text("PeerChat") }, actions = {
+                    androidx.compose.material3.TopAppBar(title = { Text("PeerChat") }, actions = {
+                        IconButton(onClick = {
+                            val q = searchQuery.text.trim()
+                            if (q.isNotEmpty()) {
+                                lifecycleScope.launch {
+                                    val msgs = db.messageDao().searchText(q, 20).map { "Msg: " + it.contentMarkdown }
+                                    val chunks = db.ragDao().searchChunks(q, 20).map { "Doc: " + it.text }
+                                    searchResults = (msgs + chunks).take(50)
+                                }
+                            } else searchResults = emptyList()
+                        }) { Icon(Icons.Default.Search, contentDescription = "Search") }
+                        IconButton(onClick = { importLauncher.launch(arrayOf("application/pdf", "text/*", "image/*")) }) { Icon(Icons.Default.UploadFile, contentDescription = "Import") }
+                        IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
+                    })
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
-                            modifier = Modifier.width(200.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            placeholder = { Text("Search") },
-                            trailingIcon = {
-                                IconButton(onClick = {
-                                    val q = searchQuery.text.trim()
-                                    if (q.isNotEmpty()) {
-                                        lifecycleScope.launch {
-                                            val msgs = db.messageDao().searchText(q, 20).map { "Msg: " + it.contentMarkdown }
-                                            val chunks = db.ragDao().searchChunks(q, 20).map { "Doc: " + it.text }
-                                            searchResults = (msgs + chunks).take(50)
-                                        }
-                                    } else searchResults = emptyList()
-                                }) { Icon(Icons.Default.Search, contentDescription = null) }
-                            }
+                            placeholder = { Text("Search messages and docs…") }
                         )
-                        IconButton(onClick = { importLauncher.launch(arrayOf("application/pdf", "text/*", "image/*")) }) { Text("Import") }
-                        IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = null) }
-                    })
+                    }
                     if (searchResults.isNotEmpty()) {
                         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp)) {
                             items(searchResults) { item -> Text(item, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
@@ -664,3 +703,61 @@ private fun sha256(s: String): String {
 
 // OCR extraction (disabled until tess-two is added)
 private fun MainActivity.extractOcrText(uri: android.net.Uri): String = ""
+
+@Composable
+private fun ModelsDialog(
+    onDismiss: () -> Unit,
+    onDownload: (String, String) -> Unit,
+    onOpenCard: (String) -> Unit
+) {
+    val models = remember {
+        listOf(
+            Triple("LFM 2 8B A1B (Q4_K_M)",
+                "https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF",
+                "https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF/resolve/main/LiquidAI_LFM2-8B-A1B-Q4_K_M.gguf?download=1"),
+            Triple("Granite 4.0 Tiny (Q4_K_M)",
+                "https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF",
+                "https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF/resolve/main/ibm-granite_granite-4.0-h-tiny-Q4_K_M.gguf?download=1"),
+            Triple("InternVL 3.5 4B (Q4_K_M)",
+                "https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF",
+                "https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF/resolve/main/OpenGVLab_InternVL3_5-4B-Q4_K_M.gguf?download=1"),
+            Triple("Qwen3 4B Thinking (Q4_K_M)",
+                "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF",
+                "https://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Thinking-2507-Q4_K_M.gguf?download=1"),
+            Triple("Qwen3 0.6B (Q4_K_M)",
+                "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF",
+                "https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf?download=1")
+        )
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        title = { Text("Get a Model") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                items(models) { item ->
+                    val (name, cardUrl, modelUrl) = item
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text(name, style = MaterialTheme.typography.titleSmall)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { onOpenCard(cardUrl) }) { Text("Model Card") }
+                            Button(onClick = { onDownload(name, modelUrl) }) { Text("Download") }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+private suspend fun downloadToModels(context: android.content.Context, name: String, url: String): String? = withContext(kotlinx.coroutines.Dispatchers.IO) {
+    return@withContext try {
+        val modelsDir = java.io.File(context.filesDir, "models").apply { if (!exists()) mkdirs() }
+        val fileName = url.substringAfterLast('/')
+        val dest = java.io.File(modelsDir, fileName)
+        java.net.URL(url).openStream().use { input ->
+            java.io.FileOutputStream(dest).use { output -> input.copyTo(output) }
+        }
+        dest.absolutePath
+    } catch (_: Throwable) { null }
+}

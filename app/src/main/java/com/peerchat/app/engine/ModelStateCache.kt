@@ -16,7 +16,7 @@ class ModelStateCache(private val context: Context) {
     suspend fun restore(chatId: Long): Boolean = withContext(Dispatchers.IO) {
         val file = stateFile(chatId)
         if (!file.exists()) return@withContext false
-        val bytes = runCatching { file.readBytes() }.getOrNull().orEmpty()
+        val bytes = runCatching { file.readBytes() }.getOrNull() ?: ByteArray(0)
         if (bytes.isEmpty()) return@withContext false
         EngineRuntime.restoreState(bytes)
     }

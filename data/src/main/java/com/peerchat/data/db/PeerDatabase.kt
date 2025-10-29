@@ -14,8 +14,9 @@ import androidx.room.TypeConverters
         RagChunk::class,
         MessageFts::class,
         RagChunkFts::class,
+        ModelManifest::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class PeerDatabase : RoomDatabase() {
@@ -25,5 +26,5 @@ abstract class PeerDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
     abstract fun embeddingDao(): EmbeddingDao
     abstract fun ragDao(): RagDao
+    abstract fun modelManifestDao(): ModelManifestDao
 }
-

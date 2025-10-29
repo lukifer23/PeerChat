@@ -5,7 +5,6 @@ import androidx.room.Entity
 import androidx.room.Fts4
 import androidx.room.Index
 import androidx.room.PrimaryKey
-import androidx.room.TypeConverters
 
 @Entity(tableName = "folders")
 data class Folder(
@@ -100,3 +99,20 @@ data class RagChunkFts(
     val text: String,
 )
 
+@Entity(
+    tableName = "model_manifests",
+    indices = [Index(value = ["name"], unique = true)]
+)
+data class ModelManifest(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val filePath: String,
+    val family: String,
+    val sizeBytes: Long,
+    val checksumSha256: String,
+    val contextLength: Int,
+    val importedAt: Long,
+    val sourceUrl: String?,
+    val metadataJson: String,
+    val isDefault: Boolean,
+)

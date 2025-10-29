@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gradMain" x1="256" y1="160" x2="768" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3EF2D0"/>
+      <stop offset="100%" stop-color="#15C59C"/>
+    </linearGradient>
+    <linearGradient id="gradInner" x1="360" y1="360" x2="700" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#54F0D5"/>
+      <stop offset="100%" stop-color="#19BFA0"/>
+    </linearGradient>
+    <linearGradient id="gradStroke" x1="300" y1="300" x2="724" y2="724" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#B9FFF2"/>
+      <stop offset="100%" stop-color="#7FFCE6"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="bubbleClip">
+      <path d="M512 332c-120 0-218 86-218 192 0 45 17 86 47 120l-22 60c-4 10 7 19 16 13l70-40c33 17 70 27 107 27 120 0 218-86 218-192s-98-180-218-180z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Chip body -->
+  <rect x="192" y="192" width="640" height="640" rx="120" fill="url(#gradMain)" filter="url(#softGlow)"/>
+
+  <!-- Pins (left & right) -->
+  <g fill="url(#gradMain)">
+    <!-- Left side pins -->
+    <rect x="148" y="280" width="44" height="96" rx="20"/>
+    <rect x="148" y="408" width="44" height="96" rx="20"/>
+    <rect x="148" y="536" width="44" height="96" rx="20"/>
+    <rect x="148" y="664" width="44" height="96" rx="20"/>
+    <!-- Right side pins -->
+    <rect x="832" y="280" width="44" height="96" rx="20"/>
+    <rect x="832" y="408" width="44" height="96" rx="20"/>
+    <rect x="832" y="536" width="44" height="96" rx="20"/>
+    <rect x="832" y="664" width="44" height="96" rx="20"/>
+    <!-- Top pins -->
+    <rect x="280" y="148" width="96" height="44" rx="20"/>
+    <rect x="408" y="148" width="96" height="44" rx="20"/>
+    <rect x="536" y="148" width="96" height="44" rx="20"/>
+    <rect x="664" y="148" width="96" height="44" rx="20"/>
+    <!-- Bottom pins -->
+    <rect x="280" y="832" width="96" height="44" rx="20"/>
+    <rect x="408" y="832" width="96" height="44" rx="20"/>
+    <rect x="536" y="832" width="96" height="44" rx="20"/>
+    <rect x="664" y="832" width="96" height="44" rx="20"/>
+  </g>
+
+  <!-- Inner chat-bubble panel -->
+  <g filter="url(#softGlow)">
+    <!-- Bubble base (circle + tail) -->
+    <path d="M512 332c-120 0-218 86-218 192 0 45 17 86 47 120l-22 60c-4 10 7 19 16 13l70-40c33 17 70 27 107 27 120 0 218-86 218-192s-98-180-218-180z"
+          fill="url(#gradInner)"/>
+
+    <!-- Circuit trace inside bubble -->
+    <g clip-path="url(#bubbleClip)">
+      <path d="M396 520
+               C 432 492, 468 482, 512 486
+               S 600 512, 640 570"
+            stroke="url(#gradStroke)" stroke-width="28" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <!-- Nodes -->
+      <circle cx="376" cy="536" r="22" fill="url(#gradStroke)"/>
+      <circle cx="512" cy="488" r="22" fill="url(#gradStroke)"/>
+      <circle cx="648" cy="576" r="22" fill="url(#gradStroke)"/>
+    </g>
+  </g>
+</svg>

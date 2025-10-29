@@ -9,7 +9,7 @@ PeerChat is an on-device AI chat application for Android that runs entirely offl
 - **RAG support**: Document ingestion and semantic search with embedding-based retrieval
 - **Streaming responses**: Real-time token streaming with performance metrics
 - **Room database**: Persistent chat history with full-text search capabilities
-- **Model management**: Support for both sideloaded and downloadable GGUF models
+- **Model management**: Persisted manifests for sideloaded/downloaded GGUF models with per-model settings
 
 ## Architecture
 
@@ -68,7 +68,9 @@ cd engine
 
 PeerChat supports GGUF format models with Q4_K_M quantization recommended for optimal performance. Default models are documented in `defaultmodels.md`.
 
-Place GGUF models in the app's private directory or configure external storage paths in model settings.
+Place GGUF models in the app's private directory (e.g. `Android/data/<pkg>/files/models/`) or import via the in-app model settings dialog, which records the file in the manifest store for reuse.
+
+Each imported model is tracked with a manifest entry including path, size, family, and optional checksum metadata. The roadmap includes manifest-driven downloads and integrity verification.
 
 ## RAG Pipeline
 
@@ -103,17 +105,15 @@ The engine tracks comprehensive metrics for each generation:
 
 ## Development Status
 
-This is an active development project. See `on.plan.md` for the current roadmap and workstream status. Key areas in progress:
+This is an active development project. See `on.plan.md` for the current roadmap and workstream status. Current focus areas include:
 
-- Native engine JNI hardening and KV reuse support
-- Model lifecycle management and manifest system
+- Rounding out the model catalog (checksum verification, default presets, download pipeline)
 - Navigation Compose architecture and ViewModel-backed state
-- Enhanced RAG pipeline with ANN index persistence
-- Security and privacy hardening
+- Enhanced RAG pipeline with tokenizer-aware chunking and ANN persistence
+- Security and privacy hardening plus CI/test coverage
 
 ## License
 
 MIT License - see LICENSE file for details.
 
 The project includes llama.cpp as a submodule, which is also licensed under MIT.
-

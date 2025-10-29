@@ -75,3 +75,23 @@ interface RagDao {
     suspend fun getByEmbeddingId(embeddingId: Long): RagChunk?
 }
 
+@Dao
+interface ModelManifestDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(manifest: ModelManifest): Long
+
+    @Query("SELECT * FROM model_manifests ORDER BY importedAt DESC")
+    fun observeAll(): Flow<List<ModelManifest>>
+
+    @Query("SELECT * FROM model_manifests ORDER BY importedAt DESC")
+    suspend fun listAll(): List<ModelManifest>
+
+    @Query("SELECT * FROM model_manifests WHERE name = :name LIMIT 1")
+    suspend fun getByName(name: String): ModelManifest?
+
+    @Query("DELETE FROM model_manifests WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("UPDATE model_manifests SET metadataJson = :metadataJson WHERE id = :id")
+    suspend fun updateMetadata(id: Long, metadataJson: String)
+}
