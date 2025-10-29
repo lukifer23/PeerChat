@@ -50,7 +50,7 @@ object ModelConfigStore {
 object ModelStorage {
     suspend fun importModel(context: Context, uri: Uri): String? = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
-        val name = resolveDisplayName(context, uri) ?: "model.gguf"
+        val name = sanitizeFileName(resolveDisplayName(context, uri) ?: "model.gguf")
         val modelsDir = File(context.filesDir, "models").apply { if (!exists()) mkdirs() }
         var dest = File(modelsDir, name)
         var suffix = 1
@@ -80,5 +80,14 @@ object ModelStorage {
             }
         }
         return uri.lastPathSegment
+    }
+
+    private fun sanitizeFileName(raw: String): String {
+        val trimmed = raw.trim().take(200)
+        val cleaned = trimmed.replace(Regex("[\\/:*?\"<>|]"), "_")
+            .replace(Regex("[\u0000-\u001F]"), "_")
+            .replace(Regex("\u007F"), "_")
+        val noTraversal = cleaned.replace("..", "_")
+        return if (noTraversal.isBlank()) "model.gguf" else noTraversal
     }
 }

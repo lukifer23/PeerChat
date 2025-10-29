@@ -882,6 +882,25 @@ private fun ChatScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(roleLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         MarkdownText(msg.contentMarkdown)
+                        if (msg.role != "user") {
+                            val reasoning = remember(msg.metaJson) {
+                                runCatching { org.json.JSONObject(msg.metaJson).optString("reasoning") }
+                                    .getOrNull().orEmpty()
+                            }
+                            if (reasoning.isNotBlank()) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(onClick = { showReasoning = true }) { Text("Reasoning") }
+                                }
+                                if (showReasoning) {
+                                    AlertDialog(
+                                        onDismissRequest = { showReasoning = false },
+                                        confirmButton = { TextButton(onClick = { showReasoning = false }) { Text("Close") } },
+                                        title = { Text("Reasoning") },
+                                        text = { Text(reasoning) }
+                                    )
+                                }
+                            }
+                        }
                     }
                     TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.contentMarkdown)) }) { Text("Copy") }
                 }

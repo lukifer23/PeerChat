@@ -623,6 +623,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
 
             val builder = StringBuilder()
+            val reasoningBuilder = StringBuilder()
+            var inReasoningRegion = false
             var success = false
             StreamingEngine.stream(
                 prompt = composition.prompt.text,
@@ -636,15 +638,31 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             ).collect { event ->
                 when (event) {
                     is EngineStreamEvent.Token -> {
-                        builder.append(event.text)
-                        onToken(event.text)
+                        val t = event.text
+                        // Detect reasoning regions
+                        if (!inReasoningRegion && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
+                            inReasoningRegion = true
+                        }
+                        if (inReasoningRegion) {
+                            reasoningBuilder.append(t)
+                            if (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>")) {
+                                inReasoningRegion = false
+                            }
+                        } else {
+                            builder.append(t)
+                            onToken(t)
+                        }
                     }
                     is EngineStreamEvent.Terminal -> {
                         success = !event.metrics.isError
                         val finalText = builder.toString()
+                        val reasoningText = reasoningBuilder.toString()
                         onComplete(finalText, event.metrics)
                         val meta = runCatching { JSONObject(event.metrics.rawJson) }.getOrElse { JSONObject() }
                         meta.put("templateId", composition.template.id)
+                        if (reasoningText.isNotBlank()) {
+                            meta.put("reasoning", reasoningText)
+                        }
                         repository.insertMessage(
                             com.peerchat.data.db.Message(
                                 chatId = chatId,
