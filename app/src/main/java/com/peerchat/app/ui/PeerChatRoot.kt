@@ -81,12 +81,15 @@ private const val ROUTE_REASONING = "reasoning/{chatId}"
 
 @Composable
 fun PeerChatRoot() {
-    com.peerchat.app.ui.theme.PeerChatTheme {
+    com.peerchat.app.ui.theme.PeerChatTheme(darkTheme = true) {
         val navController = rememberNavController()
         Surface(color = MaterialTheme.colorScheme.background) {
             NavHost(navController = navController, startDestination = ROUTE_HOME) {
                 composable(ROUTE_HOME) {
                     HomeScreen(navController = navController)
+                }
+                composable(ROUTE_MODELS) {
+                    ModelsScreen(onBack = { navController.popBackStack() })
                 }
             }
         }
@@ -194,6 +197,28 @@ private fun HomeScreen(navController: NavHostController) {
                     }
                 if (isCompact) {
                     Column(verticalArrangement = Arrangement.spacedBy(bodySpacing)) {
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 260.dp)
+                        ) {
+                            if (uiState.activeChatId != null) {
+                                ChatScreen(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    enabled = true,
+                                    messages = uiState.messages,
+                                    onSend = { prompt, onToken, onComplete ->
+                                        viewModel.sendPrompt(prompt, onToken, onComplete)
+                                    }
+                                )
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
+                                }
+                            }
+                        }
                         SectionCard(
                             title = "Folders",
                             actionLabel = "New",
@@ -248,29 +273,6 @@ private fun HomeScreen(navController: NavHostController) {
                                         )
                                     )
                         }
-                            }
-                        }
-
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 360.dp)
-                        ) {
-                            if (uiState.activeChatId != null) {
-                                ChatScreen(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    enabled = true,
-                                    messages = uiState.messages,
-                                    onSend = { prompt, onToken, onComplete ->
-                                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                                    }
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
-                                }
                             }
                         }
                     }
@@ -956,5 +958,80 @@ private fun openUrl(context: android.content.Context, url: String) {
             addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
+    }
+}
+
+@Composable
+private fun ModelsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val application = context.applicationContext as android.app.Application
+    val viewModel: HomeViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                return HomeViewModel(application) as T
+            }
+        }
+    )
+    val uiState by viewModel.uiState.collectAsState()
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Models") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.Settings, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Catalog", style = MaterialTheme.typography.titleMedium)
+                    DefaultModels.list.forEach { model ->
+                        val workState = rememberDownloadState(model)
+                        val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
+                        ModelCatalogRow(
+                            model = model,
+                            manifest = manifest,
+                            workState = workState,
+                            onDownload = { ModelDownloadManager.enqueue(context, model) },
+                            onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
+                            onOpenCard = { openUrl(context, model.cardUrl) }
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Available", style = MaterialTheme.typography.titleMedium)
+                    if (uiState.manifests.isEmpty()) {
+                        EmptyListHint("No manifests recorded yet.")
+                    } else {
+                        uiState.manifests.forEach { manifest ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(manifest.name, style = MaterialTheme.typography.bodyMedium)
+                                    Text("${manifest.family} • ${formatBytes(manifest.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    TextButton(onClick = { viewModel.activateManifest(manifest) }) { Text("Activate") }
+                                    TextButton(onClick = { viewModel.deleteManifest(manifest) }) { Text("Delete") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

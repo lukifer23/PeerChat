@@ -492,9 +492,25 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val path = ModelStorage.importModel(appContext, uri)
                 if (!path.isNullOrEmpty()) {
-                    _uiState.update { it.copy(modelPath = path) }
+                    // Record manifest
                     manifestService.ensureManifestFor(path)
-                    _events.emit(HomeEvent.Toast("Model imported"))
+
+                    // Autoload using current UI inputs (fallback to sane defaults)
+                    val state = _uiState.value
+                    val threads = state.threadText.toIntOrNull() ?: 6
+                    val ctxLen = state.contextText.toIntOrNull() ?: 4096
+                    val gpu = state.gpuText.toIntOrNull() ?: 20
+                    val config = StoredEngineConfig(
+                        modelPath = path,
+                        threads = threads,
+                        contextLength = ctxLen,
+                        gpuLayers = gpu,
+                        useVulkan = state.useVulkan
+                    )
+                    // Update path immediately for visibility
+                    _uiState.update { it.copy(modelPath = path) }
+                    // Load model (shows toast on success/failure)
+                    loadModelInternal(config, showToast = true)
                 } else {
                     _events.emit(HomeEvent.Toast("Import failed"))
                 }
