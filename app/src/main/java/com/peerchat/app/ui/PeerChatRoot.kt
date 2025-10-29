@@ -90,11 +90,13 @@ fun PeerChatRoot() {
                 composable(ROUTE_HOME) {
                     HomeScreen(navController = navController)
                 }
-                composable(ROUTE_MODELS) {
-                    ModelsScreen(onBack = { navController.popBackStack() })
-                }
-                composable(ROUTE_DOCUMENTS) {
-                    DocumentsScreen(onBack = { navController.popBackStack() })
+                composable(ROUTE_CHAT) { backStackEntry ->
+                    val chatIdArg = backStackEntry.arguments?.getString("chatId")?.toLongOrNull()
+                    if (chatIdArg != null) {
+                        ChatRouteScreen(navController = navController, chatId = chatIdArg)
+                    } else {
+                        Text("Invalid chat")
+                    }
                 }
             }
         }
