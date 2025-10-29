@@ -533,14 +533,14 @@ std::string detect_model_metadata(const char * path) {
                      contains_case_insensitive(chat_template, "<reasoning>");
 
     std::ostringstream oss;
-    oss << "{"
-        << "\"arch\":\"" << escape_json(arch) << "\",""
+    oss << "{" 
+        << "\"arch\":\"" << escape_json(arch) << "\"," 
         << "\"nCtxTrain\":" << n_ctx_train << ","
         << "\"nLayer\":" << n_layer << ","
         << "\"nEmbd\":" << n_embd << ","
         << "\"nVocab\":" << n_vocab << ","
-        << "\"chatTemplate\":\"" << escape_json(chat_template) << "\",""
-        << "\"tokenizerModel\":\"" << escape_json(tokenizer_model) << "\",""
+        << "\"chatTemplate\":\"" << escape_json(chat_template) << "\"," 
+        << "\"tokenizerModel\":\"" << escape_json(tokenizer_model) << "\"," 
         << "\"reasoning\":" << (reasoning ? "true" : "false") << ","
         << "\"tags\":\"" << escape_json(tags) << "\"";
     oss << "}";
@@ -594,8 +594,6 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
     cparams.n_ctx = std::max(512, nCtx);
     cparams.n_threads = std::max(1, nThreads);
     cparams.n_threads_batch = std::max(1, nThreads);
-    cparams.flash_attn = true;
-    cparams.seed = LLAMA_DEFAULT_SEED;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
@@ -793,3 +791,64 @@ Java_com_peerchat_engine_EngineNative_detectModel(JNIEnv * env, jobject thiz, js
     return env->NewStringUTF(json.c_str());
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_peerchat_engine_EngineNative_stateCapture(JNIEnv * env, jobject thiz) {
+    (void) thiz;
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return env->NewByteArray(0);
+    }
+    const size_t size = llama_state_get_size(g_state.ctx);
+    if (size == 0) {
+        return env->NewByteArray(0);
+    }
+    std::vector<uint8_t> buffer(size);
+    const size_t written = llama_state_get_data(g_state.ctx, buffer.data(), buffer.size());
+    if (written == 0) {
+        return env->NewByteArray(0);
+    }
+    jbyteArray result = env->NewByteArray(static_cast<jsize>(written));
+    if (!result) {
+        return nullptr;
+    }
+    env->SetByteArrayRegion(result, 0, static_cast<jsize>(written),
+            reinterpret_cast<const jbyte *>(buffer.data()));
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_peerchat_engine_EngineNative_stateRestore(JNIEnv * env, jobject thiz, jbyteArray jState) {
+    (void) thiz;
+    if (!jState) {
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return JNI_FALSE;
+    }
+    const jsize len = env->GetArrayLength(jState);
+    if (len <= 0) {
+        return JNI_FALSE;
+    }
+    std::vector<uint8_t> buffer(static_cast<size_t>(len));
+    env->GetByteArrayRegion(jState, 0, len, reinterpret_cast<jbyte *>(buffer.data()));
+    llama_memory_clear(llama_get_memory(g_state.ctx), false);
+    const size_t read = llama_state_set_data(g_state.ctx, buffer.data(), buffer.size());
+    const bool ok = read > 0;
+    if (ok) {
+        reset_metrics_locked();
+    }
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peerchat_engine_EngineNative_stateClear(JNIEnv * env, jobject thiz, jboolean clearData) {
+    (void) env;
+    (void) thiz;
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return;
+    }
+    llama_memory_clear(llama_get_memory(g_state.ctx), clearData == JNI_TRUE);
+    reset_metrics_locked();
+}

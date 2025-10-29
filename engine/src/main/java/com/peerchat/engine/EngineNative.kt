@@ -45,5 +45,10 @@ object EngineNative {
     external fun metrics(): String
 
     external fun detectModel(modelPath: String): String
-}
 
+    external fun stateCapture(): ByteArray
+
+    external fun stateRestore(state: ByteArray): Boolean
+
+    external fun stateClear(clearData: Boolean)
+}

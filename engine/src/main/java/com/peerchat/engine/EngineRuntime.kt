@@ -18,6 +18,9 @@ object EngineRuntime {
     private val _metrics = MutableStateFlow(EngineMetrics.empty())
     val metrics: StateFlow<EngineMetrics> = _metrics
 
+    private val _modelMeta = MutableStateFlow<String?>(null)
+    val modelMeta: StateFlow<String?> = _modelMeta
+
     fun ensureInitialized() {
         if (initOnce.compareAndSet(false, true)) {
             EngineNative.init()
@@ -40,6 +43,11 @@ object EngineRuntime {
         if (success) {
             _status.value = EngineStatus.Loaded(config)
             updateMetricsFromNative()
+            // detect and cache model metadata for template autodetection
+            val meta = withContext(Dispatchers.IO) {
+                runCatching { EngineNative.detectModel(config.modelPath) }.getOrNull()
+            }
+            _modelMeta.value = meta
         } else {
             _status.value = EngineStatus.Error("Failed to load ${config.modelPath}")
         }
@@ -63,6 +71,30 @@ object EngineRuntime {
         val metrics = EngineMetrics.fromJson(EngineNative.metrics())
         updateMetrics(metrics)
         return metrics
+    }
+
+    fun currentModelMeta(): String? = _modelMeta.value
+
+    suspend fun captureState(): ByteArray? = mutex.withLock {
+        ensureInitialized()
+        val snapshot = withContext(Dispatchers.IO) { EngineNative.stateCapture() }
+        if (snapshot.isEmpty()) null else snapshot
+    }
+
+    suspend fun restoreState(snapshot: ByteArray): Boolean = mutex.withLock {
+        if (snapshot.isEmpty()) return@withLock false
+        ensureInitialized()
+        val restored = withContext(Dispatchers.IO) { EngineNative.stateRestore(snapshot) }
+        if (restored) {
+            updateMetrics(EngineMetrics.empty())
+        }
+        restored
+    }
+
+    suspend fun clearState(clearData: Boolean = false) = mutex.withLock {
+        ensureInitialized()
+        withContext(Dispatchers.IO) { EngineNative.stateClear(clearData) }
+        updateMetrics(EngineMetrics.empty())
     }
 
     data class EngineConfig(

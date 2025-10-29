@@ -14,21 +14,19 @@
 - **Observability**: persistent metrics (TTFS, TPS, context %, cache hits) per message; structured logs with retention policy.
 
 ## Current Baseline Snapshot
-- Android multi-module project (`app`, `engine`, `data`, `docs`, `rag`, `templates`); only `app`, `engine`, `data` have substantive code.
-- JNI bridge wraps llama.cpp but lacks robust model management, streaming stop control, or detailed telemetry.
-- Compose UI is single-activity with inline state; no navigation architecture, model selection, or document/RAG flows.
-- Room schema mirrors desired tables but uses destructive migrations and lacks converters/indices for embeddings.
-- No doc set, CI, tests, or repo metadata; git not initialized.
+- Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git remote initialized and first commit pushed.
+- Native layer wraps llama.cpp with Vulkan flags, structured streaming callbacks, stop-sequence handling, GGUF metadata extraction, and metrics surfaced via `EngineMetrics`.
+- Kotlin runtime (`EngineRuntime` + `StreamingEngine`) manages model lifecycle, streaming flows, and metrics propagation; Compose chat screen renders Markdown, captures reasoning blocks, and persists metrics/data via Room.
+- Data layer defines Room entities/DAOs for chats, messages, documents, embeddings, and RAG chunks; RagService provides naive chunking + cosine retrieval backed by on-device embeddings.
+- Model management UI, manifests, downloads, and storage policies still absent; Compose navigation is single-activity with large monolithic screen; docs/CI/tests remain unimplemented.
 
 ## Workstreams & Key Tasks
 
-### 1. Native Engine & JNI Hardening
-- Vendor llama.cpp as submodule with reproducible commit pin; enforce Vulkan flags and ABI configuration.
-- Implement thread-safe engine lifecycle: lazy backend init, idempotent load/unload, kv cache reuse, prompt caching hooks.
-- Implement structured streaming API: stop-string checks, reasoning-prefix detection, backpressure, error propagation.
-- Surface extended metrics (prefill ms, decode ms, TTFS, TPS, max context, kv cache hits, Vulkan stats).
-- Add GGUF metadata inspection (template hints, reasoning tags, context size, tokenizer) via kv parsing.
-- Provide embeddings context pooling, configurable threads, and graceful resource teardown on app background.
+### 1. Native Engine & JNI Hardening (in progress)
+- Pin llama.cpp revision + treat as submodule; strip unused tooling from app package at build time.
+- Extend engine metrics with context window utilization, GPU stats, cache hit/miss, and failure codes; expose kv reuse/prompt cache primitives.
+- Implement KV reuse support (forks, prompt caching), abort callbacks, and structured error surfaces to Kotlin.
+- Add Vulkan capability probing and graceful fallback toggles surfaced to model settings.
 
 ### 2. Model Lifecycle & Storage
 - Define model manifest format (JSON) containing name, family, context, checksum, source URL, download size.
@@ -45,19 +43,18 @@
 - Provide repository layer (Kotlin) encapsulating suspend functions/Flows and transaction boundaries.
 
 ### 4. RAG & Document Pipeline
-- Docs module: wrap PdfBox/tess-two for text & OCR extraction, with chunking pipeline (token-aware overlap).
-- RAG module: integrate hnswlib via JNI; manage ANN index lifecycle, background rebuilds, persistence to scoped storage.
-- Implement hybrid search (semantic + FTS5) with rank fusion policies and configurable weights.
-- Provide ingestion UI (Documents screen): import, status, recalc embeddings, metrics.
-- Support per-chat vs global corpora, context assembly with deduplication, token budgeting.
+- Replace naive whitespace chunking with tokenizer-aware segmentation; persist chunk metadata (positions, token counts).
+- Integrate hnswlib ANN via JNI with on-disk index persistence and rebuild controls.
+- Implement hybrid search (semantic cosine + FTS5) with rank fusion policies and configurable weights.
+- Provide ingestion UI (Documents screen): import queue, status, re-embed, deletion controls, metrics.
+- Support per-chat vs global corpora, context assembly with deduplication, token budgeting, and prompt templating.
 
 ### 5. UI/UX Architecture
-- Adopt Navigation Compose with dedicated screens: Home, Chat, Documents, Settings, Model Manager, Reasoning modal.
-- Implement composable state holders (MVI-style) with view models and coroutines/Flows.
-- Build chat view with Markdown rendering, code highlighting, streaming bubbles, reasoning reveal.
-- Add metrics overlay (TTFS/TPS/context%) and per-message detail drawer.
-- Provide folder management, search (lexical & semantic), chat fork history, export/share (user-confirmed).
-- Ensure responsive layout for tablets/desktops; dark/light themes; accessibility (content descriptions, font scaling).
+- Adopt Navigation Compose with dedicated screens: Home, Chat, Documents, Model Manager, Settings, Reasoning inspector.
+- Introduce ViewModel-backed state management (Flows, SavedState) and extract business logic from composables.
+- Build modular chat experience: streaming bubbles, code-specific copy, per-message metrics drawer, reasoning timeline.
+- Add model picker + runtime controls, global search (lexical+semantic), chat fork lineage UI, explicit export/share pipeline.
+- Ensure responsive layout for large screens; provide themes, high-contrast mode, and accessibility affordances.
 
 ### 6. Security & Privacy
 - Store secrets in `EncryptedSharedPreferences`; isolate models/docs in app sandbox.
@@ -81,24 +78,24 @@
 ## Implementation Phases
 
 ### Phase 0 – Foundation (Week 1)
-1. Harden native engine (Workstream 1) with robust model lifecycle, streaming, metrics overhaul.
-2. Build repository/service layer for model manifests and persistence (Workstream 2 & 3 fundamentals).
-3. Remove destructive migrations, add schema tests, set up baseline CI workflow skeleton.
+1. Finalize native engine lifecycle (Workstream 1 carryover): KV reuse, diagnostics, Vulkan toggles.
+2. Design & persist model manifest schema (Workstream 2) with initial discovery + configuration storage.
+3. Replace destructive migrations, add schema tests, and establish baseline CI workflow skeleton (Workstream 3/7).
 
 ### Phase 1 – Model Management & UI Core (Week 2)
-1. Implement Model Manager screen, local discovery, and Vulkan configuration hooks.
-2. Wire chat screen to real message persistence, metrics overlay, reasoning capture, and template detection.
-3. Establish navigation architecture and shared design system (themes, typography, icons).
+1. Implement model catalog UI, manifest-driven selection, and load/unload orchestration in-app.
+2. Establish Navigation Compose shell, shared design system, and ViewModel-backed chat/home screens.
+3. Surface metrics overlays, message detail drawers, and reasoning timeline using existing engine metrics.
 
 ### Phase 2 – RAG & Documents (Week 3)
-1. Deliver ingestion pipeline (PDF/OCR → chunk → embed → ANN persist).
-2. Build Documents screen with status, re-embed, and deletion controls.
-3. Integrate hybrid search into chat composer suggestions and global search.
+1. Upgrade ingestion pipeline (OCR, tokenizer chunking, ANN persistence) with WorkManager-driven background jobs.
+2. Build Documents screen for import queue, status, re-embed, delete, and per-doc metrics.
+3. Integrate hybrid search into chat composer suggestions and global search overlays.
 
 ### Phase 3 – Security, Tooling, Polish (Week 4)
-1. Enforce storage policies, encrypted preferences, export workflows.
-2. Finalize logging/metrics dashboards, benchmarking suite, battery saver/backpressure.
-3. Complete documentation set, diagrams, troubleshooting, finalize CI gates.
+1. Enforce storage policies, encrypted preferences, export workflows, and audit logging.
+2. Ship benchmarking suite + performance gating in CI, add battery saver/backpressure controls.
+3. Complete documentation set, diagrams, troubleshooting, and finalize CI gates with release checklist.
 
 ### Continuous Deliverables
 - Daily smoke build on device, nightly perf harness run.
@@ -127,7 +124,6 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Implement native engine refactor (Workstream 1).
-2. Design model manifest schema and persistence entities.
-3. Scaffold documentation folder structure to host upcoming guides.
-
+1. Extend native engine to expose KV reuse/prompt cache + enriched metrics (Workstream 1).
+2. Define model manifest schema, entities, and storage (Workstream 2), including discovery of sideloaded models.
+3. Stand up Navigation Compose scaffold with ViewModel-backed state and prep slots for model manager & documents screens (Workstream 5).
