@@ -257,6 +257,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         activeChatId.value = chatId
         _uiState.update { it.copy(activeChatId = chatId) }
         loadChatSettings(chatId)
+        viewModelScope.launch { _events.emit(HomeEvent.Toast("Opened chat #$chatId")) }
     }
 
     fun updateSearchQuery(query: String) {
