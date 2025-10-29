@@ -4,12 +4,18 @@ PeerChat runs entirely offline. All language models must be present on the devic
 
 ## Importing a GGUF model
 
-1. Open the app and tap the **Import Model** button in the top bar (or use the Settings dialog).
+### From device storage
+
+1. Open the app and tap the **Import Model** chip in the top app bar (or open **Settings** and load from there).
 2. Choose a `.gguf` file from Storage Access Framework (Downloads, Files, etc.).
 3. The model is copied into `Android/data/<package>/files/models/`.
 4. A manifest entry is recorded including file name, size, and SHA-256 checksum. You can review it under **Settings → Available Models**.
 
 > Tip: You can also sideload models manually into the `files/models` directory. When you specify the path in Settings, PeerChat will register it in the manifest store.
+
+### From the built-in catalog
+
+The Settings dialog and the **Models** chip in the top bar list curated defaults sourced from `defaultmodels.md`. Press **Download** to enqueue a background download managed by WorkManager. Progress appears inline, and once complete the file is registered in the manifest automatically.
 
 ## Loading and Unloading
 
@@ -34,10 +40,9 @@ The manifests are persisted via Room migrations, so updates will not wipe your l
 
 ## Integrity verification
 
-Each time a manifest is created or refreshed, PeerChat computes a SHA-256 digest to detect silent corruption. A future release will expose an explicit verify action and enforce checksum matching for downloads.
+Each time a manifest is created or refreshed, PeerChat computes a SHA-256 digest to detect silent corruption. A future release will expose an explicit verify action and enforce checksum matching for remote catalogs.
 
 ## Roadmap
 
-- In-app download manager with WorkManager, progress, and resume support.
-- Default manifest presets populated from `defaultmodels.md`.
+- Default manifest presets populated from `defaultmodels.md` with per-family tuning hints.
 - Template detection and automatic prompt wiring based on GGUF metadata.

@@ -10,12 +10,14 @@ PeerChat is an on-device AI chat application for Android that runs entirely offl
 - **Streaming responses**: Real-time token streaming with performance metrics
 - **Room database**: Persistent chat history with full-text search capabilities
 - **Model management**: Persisted manifests for sideloaded/downloaded GGUF models with per-model settings
+- **Offline catalog downloads**: Built-in WorkManager queue for fetching curated GGUF models with integrity checks
+- **Responsive Compose UI**: Card-based home layout with adaptive panes for phones and tablets, backed by Navigation Compose
 
 ## Architecture
 
 The project is organized as a multi-module Android application:
 
-- **app**: Main application module with Compose UI and chat interface
+- **app**: Main application module with a Navigation Compose shell (`PeerChatRoot`), responsive UI components, and chat interface
 - **engine**: Native inference engine wrapping llama.cpp with JNI bindings
 - **data**: Room database layer for persistence (chats, messages, documents, embeddings)
 - **rag**: RAG service for document indexing and semantic retrieval
@@ -68,9 +70,7 @@ cd engine
 
 PeerChat supports GGUF format models with Q4_K_M quantization recommended for optimal performance. Default models are documented in `defaultmodels.md`.
 
-Place GGUF models in the app's private directory (e.g. `Android/data/<pkg>/files/models/`) or import via the in-app model settings dialog, which records the file in the manifest store for reuse. See [`docs/howto-models.md`](docs/howto-models.md) for detailed instructions.
-
-Each imported model is tracked with a manifest entry including path, size, family, and SHA-256 checksum. The roadmap includes manifest-driven downloads and integrity verification.
+Place GGUF models in the app's private directory (e.g. `Android/data/<pkg>/files/models/`) or use the in-app model catalog to download from curated defaults. Each import records a manifest entry with path, size, family, and SHA-256 checksum. See [`docs/howto-models.md`](docs/howto-models.md) for detailed instructions.
 
 ## RAG Pipeline
 
@@ -107,8 +107,8 @@ The engine tracks comprehensive metrics for each generation:
 
 This is an active development project. See `on.plan.md` for the current roadmap and workstream status. Current focus areas include:
 
-- Rounding out the model catalog (checksum verification, default presets, download pipeline)
-- Navigation Compose architecture and ViewModel-backed state
+- ViewModel/repository layer to back the new navigation shell and reduce UI-side database access
+- Rounding out the model catalog (checksum verification, default presets, template-aware prompts)
 - Enhanced RAG pipeline with tokenizer-aware chunking and ANN persistence
 - Security and privacy hardening plus CI/test coverage
 

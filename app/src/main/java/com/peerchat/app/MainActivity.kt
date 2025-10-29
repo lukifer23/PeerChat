@@ -23,6 +23,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Divider
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -57,6 +59,8 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 import java.util.regex.Pattern
+import android.widget.Toast
+import com.peerchat.app.engine.DefaultModels
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,7 +185,12 @@ class MainActivity : ComponentActivity() {
                                 if (!path.isNullOrEmpty()) {
                                     modelPath = path
                                     manifestService.ensureManifestFor(path)
+                                    Toast.makeText(context, "Model imported: ${File(path).name}", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "Failed to import model", Toast.LENGTH_SHORT).show()
                                 }
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Import error: ${e.message}", Toast.LENGTH_SHORT).show()
                             } finally {
                                 importingModel = false
                             }
@@ -270,6 +279,7 @@ class MainActivity : ComponentActivity() {
 
                 Column(Modifier.fillMaxSize()) {
                     androidx.compose.material3.TopAppBar(title = { Text("PeerChat") }, actions = {
+                        TextButton(onClick = { showNewChat = true }) { Text("New Chat") }
                         TextButton(onClick = {
                             documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
                         }, enabled = !indexing) {
@@ -312,8 +322,8 @@ class MainActivity : ComponentActivity() {
                             }
                             LazyColumn(Modifier.heightIn(max = 160.dp)) {
                                 items(folders) { f ->
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                        Text(f.name, modifier = Modifier.weight(1f))
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(f.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                         TextButton(onClick = { selectedFolder.value = f.id }) { Text("Open") }
                                     }
                                 }
@@ -325,8 +335,8 @@ class MainActivity : ComponentActivity() {
                             }
                             LazyColumn(Modifier.weight(1f)) {
                                 items(chats) { c ->
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                                        Text(c.title, modifier = Modifier.weight(1f))
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(c.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                                         TextButton(onClick = { chatIdState.value = c.id }) { Text("Open") }
                                         TextButton(onClick = {
                                             tempName = TextFieldValue(c.title)
@@ -349,9 +359,14 @@ class MainActivity : ComponentActivity() {
                         }
                         // right: chat area
                         Box(Modifier.weight(1f)) {
-                            ChatScreen(onSend = { prompt, appendToken, onDone ->
-                    lifecycleScope.launch {
-                        val chatId = chatIdState.value ?: return@launch
+                            val currentChatId = chatIdState.value
+                            if (currentChatId != null) {
+                                ChatScreen(
+                                    chatId = currentChatId,
+                                    db = db,
+                                    onSend = { prompt, appendToken, onDone ->
+                                lifecycleScope.launch {
+                                    val chatId = chatIdState.value ?: return@launch
                         val restored = modelCache.restore(chatId)
                         if (!restored) {
                             EngineRuntime.clearState(false)
@@ -419,6 +434,11 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 })
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select a chat to start", style = MaterialTheme.typography.bodyLarge)
+                                }
+                            }
                         }
                     }
                 }
@@ -526,9 +546,12 @@ class MainActivity : ComponentActivity() {
                                                 } finally {
                                                     isLoadingModel = false
                                                 }
-                                                if (!success) {
+                                                if (success) {
+                                                    Toast.makeText(context, "Model loaded successfully", Toast.LENGTH_SHORT).show()
+                                                } else {
                                                     storedConfig = null
                                                     ModelConfigStore.clear(context)
+                                                    Toast.makeText(context, "Failed to load model", Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         },
@@ -750,6 +773,42 @@ class MainActivity : ComponentActivity() {
                         text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Chat title") }) }
                     )
                 }
+                if (showModels) {
+                    AlertDialog(
+                        onDismissRequest = { showModels = false },
+                        confirmButton = { TextButton(onClick = { showModels = false }) { Text("Close") } },
+                        title = { Text("Models") },
+                        text = {
+                            Column(Modifier.fillMaxWidth()) {
+                                DefaultModels.list.forEach { model ->
+                                    val manifest = manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
+                                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                        Text(model.name, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                        Text(model.description, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                                        if (manifest != null) {
+                                            Text("Installed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                        }
+                                        Spacer(Modifier.height(4.dp))
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.wrapContentWidth()) {
+                                            TextButton(onClick = {
+                                                val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(model.cardUrl))
+                                                try { context.startActivity(intent) } catch (e: Exception) {}
+                                            }) { Text("Card") }
+                                            if (manifest != null) {
+                                                TextButton(onClick = {
+                                                    modelPath = manifest.filePath
+                                                    if (manifest.contextLength > 0) contextText = manifest.contextLength.toString()
+                                                    showModels = false
+                                                }) { Text("Use") }
+                                            }
+                                        }
+                                    }
+                                    HorizontalDivider()
+                                }
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -757,11 +816,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun ChatScreen(
+    chatId: Long,
+    db: com.peerchat.data.db.PeerDatabase,
     onSend: (String, (String) -> Unit, (EngineMetrics) -> Unit) -> Unit,
     onFinalize: (String, EngineMetrics) -> Unit
 ) {
     var input by remember { mutableStateOf(TextFieldValue("")) }
-    var messages by remember { mutableStateOf(listOf<String>()) }
+    val messagesFlow = remember(chatId) { db.messageDao().observeByChat(chatId) }
+    val messages by messagesFlow.collectAsState(initial = emptyList())
     var streaming by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf("") }
     var metrics by remember { mutableStateOf<EngineMetrics?>(null) }
@@ -773,9 +835,14 @@ private fun ChatScreen(
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         LazyColumn(Modifier.weight(1f)) {
             items(messages) { msg ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(msg, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg)) }) { Text("Copy") }
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), colors = CardDefaults.cardColors(
+                    containerColor = if (msg.role == "user") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                )) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(msg.role.uppercase(Locale.US), style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.height(4.dp))
+                        MarkdownText(msg.contentMarkdown)
+                    }
                 }
             }
             item {
@@ -830,7 +897,6 @@ private fun ChatScreen(
             Button(enabled = !streaming && input.text.isNotBlank(), onClick = {
                 val prompt = input.text
                 input = TextFieldValue("")
-                messages = messages + ("You: " + prompt)
                 current = "Assistant: "
                 metrics = null
                 reasoning = ""
@@ -854,7 +920,6 @@ private fun ChatScreen(
                     streaming = false
                     metrics = m
                     val finalText = current.removePrefix("Assistant: ").trimStart()
-                    messages = messages + current
                     current = ""
                     onFinalize(finalText, m)
                 })

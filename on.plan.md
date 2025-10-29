@@ -30,8 +30,8 @@
 
 ### 2. Model Lifecycle & Storage (in progress)
 - `ModelManifest` schema + Room migration in place; manifests auto-register imported/sideloaded GGUF files.
-- Settings dialog now lists manifests, computes SHA-256, allows activation/removal, and exposes runtime configuration controls.
-- Next: add checksum validation UI, predefined presets, and WorkManager-based downloads with integrity enforcement.
+- Settings dialog lists manifests, computes SHA-256, allows activation/removal, and now includes a WorkManager-backed download catalog.
+- Next: add interactive checksum verification, predefined presets with recommended settings, and template-driven prompt wiring.
 
 ### 3. Data Persistence & Sync
 - Room migration v1→v2 live (manifests table); need schema validation tests in CI.
@@ -121,6 +121,6 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Implement WorkManager-based model downloads with checksum enforcement and progress UI (Workstream 2/6).
-2. Add manifest presets + template detection from GGUF metadata, surfacing recommended configs (Workstream 2).
+1. Add manifest presets + template detection from GGUF metadata, surfacing recommended configs (Workstream 2).
+2. Implement user-facing checksum verification UI and integrity alerts (Workstream 2/6).
 3. Begin Navigation Compose refactor with ViewModel-backed state to host forthcoming model manager and documents screens (Workstream 5).

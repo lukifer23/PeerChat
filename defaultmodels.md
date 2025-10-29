@@ -1,28 +1,7 @@
-PeerChat Default Models
-
-LFM 2 8b-A1B GGUF - model card 
-https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF 
-
-Model link:https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF/blob/main/LiquidAI_LFM2-8B-A1B-Q4_K_M.gguf
-
-
-IBM Granite 4.0 Tiny - model card
-https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF
-
-Model Link:https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF/blob/main/ibm-granite_granite-4.0-h-tiny-Q4_K_M.gguf
-
-
-Intern VL3.5 4b - model card
-https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF
-
-
-Model Link:https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF/blob/main/OpenGVLab_InternVL3_5-4B-Q4_K_M.gguf
-
-
-Qwen 3-4B - Thinking -2507 - model cardhttps://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF
-
-Model linkhttps://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF/blob/main/Qwen_Qwen3-4B-Thinking-2507-Q4_K_M.gguf
-
-
-Qwen 3-0.6b - thinking - model card
-https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUFModel Link:https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/blob/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf
+| id | name | description | model card | download | suggested filename |
+|----|------|-------------|------------|----------|--------------------|
+| lfm2_8b_q4km | Liquid LFM-2 8B Q4_K_M | Versatile 8B general model (Liquid AI). | https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF | https://huggingface.co/bartowski/LiquidAI_LFM2-8B-A1B-GGUF/resolve/main/LiquidAI_LFM2-8B-A1B-Q4_K_M.gguf?download=1 | LiquidAI_LFM2-8B-A1B-Q4_K_M.gguf |
+| granite_4_tiny_q4km | Granite 4.0 Tiny Q4_K_M | IBM Granite Tiny instruction-tuned model. | https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF | https://huggingface.co/bartowski/ibm-granite_granite-4.0-h-tiny-GGUF/resolve/main/ibm-granite_granite-4.0-h-tiny-Q4_K_M.gguf?download=1 | ibm-granite_granite-4.0-h-tiny-Q4_K_M.gguf |
+| internvl_35_4b_q4km | InternVL 3.5 4B Q4_K_M | Multimodal-capable InternVL 3.5 distilled for 4B. | https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF | https://huggingface.co/bartowski/OpenGVLab_InternVL3_5-4B-GGUF/resolve/main/OpenGVLab_InternVL3_5-4B-Q4_K_M.gguf?download=1 | OpenGVLab_InternVL3_5-4B-Q4_K_M.gguf |
+| qwen3_4b_thinking_q4km | Qwen 3 4B Thinking Q4_K_M | Reasoning-optimized Qwen 3 4B. | https://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF | https://huggingface.co/bartowski/Qwen_Qwen3-4B-Thinking-2507-GGUF/resolve/main/Qwen_Qwen3-4B-Thinking-2507-Q4_K_M.gguf?download=1 | Qwen_Qwen3-4B-Thinking-2507-Q4_K_M.gguf |
+| qwen3_06b_q4km | Qwen 3 0.6B Q4_K_M | Lightweight Qwen 3 0.6B for quick tests. | https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF | https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf?download=1 | Qwen_Qwen3-0.6B-Q4_K_M.gguf |
