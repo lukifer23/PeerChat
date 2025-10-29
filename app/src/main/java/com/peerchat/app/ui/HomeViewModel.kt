@@ -20,6 +20,7 @@ import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 import com.peerchat.rag.RagService
+import com.peerchat.templates.TemplateCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -49,7 +50,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val manifestService = ModelManifestService(appContext)
     private val modelCache = ModelStateCache(appContext)
 
-    private val _uiState = MutableStateFlow(HomeUiState())
+    private val templateOptions = TemplateCatalog.descriptors().map {
+        TemplateOption(
+            id = it.id,
+            label = it.displayName,
+            stopSequences = it.stopSequences
+        )
+    }
+
+    private val _uiState = MutableStateFlow(HomeUiState(templates = templateOptions))
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<HomeEvent>()
@@ -89,6 +98,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         currentActive == null || chats.none { it.id == currentActive } -> chats.first().id
                         else -> currentActive
                     }
+                    val activeChanged = resolvedActive != null && resolvedActive != currentActive
                     activeChatId.value = resolvedActive
                     _uiState.update {
                         it.copy(
@@ -96,6 +106,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                             activeChatId = resolvedActive,
                             selectedFolderId = selectedFolderId.value
                         )
+                    }
+                    if (activeChanged) {
+                        loadChatSettings(resolvedActive!!)
                     }
                     if (chats.isEmpty()) {
                         ensureSeedChat()
@@ -138,6 +151,28 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun loadChatSettings(chatId: Long) {
+        viewModelScope.launch {
+            val chat = repository.getChat(chatId) ?: return@launch
+            val settings = runCatching { JSONObject(chat.settingsJson) }.getOrNull()
+            val templateId = settings?.optStringOrNull("templateId")
+            val temperature = settings?.optFloatOrNull("temperature")
+            val topP = settings?.optFloatOrNull("topP")
+            val topK = settings?.optIntOrNull("topK")
+            val maxTokens = settings?.optIntOrNull("maxTokens")
+            _uiState.update { state ->
+                state.copy(
+                    sysPrompt = chat.systemPrompt,
+                    temperature = temperature ?: state.temperature,
+                    topP = topP ?: state.topP,
+                    topK = topK ?: state.topK,
+                    maxTokens = maxTokens ?: state.maxTokens,
+                    selectedTemplateId = templateId
+                )
+            }
+        }
+    }
+
     private fun observeEngine() {
         viewModelScope.launch {
             EngineRuntime.status.collect { status ->
@@ -159,7 +194,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private fun observeManifests() {
         viewModelScope.launch {
             manifestService.manifestsFlow().collectLatest { manifests ->
-                _uiState.update { it.copy(manifests = manifests) }
+                val state = _uiState.value
+                val targetPath = state.storedConfig?.modelPath
+                    ?: state.modelPath.takeIf { it.isNotBlank() }
+                val activeManifest = targetPath?.let { path ->
+                    manifests.firstOrNull { it.filePath == path }
+                }
+                val detectedTemplate = activeManifest?.let { manifestService.detectedTemplateId(it) }
+                _uiState.update {
+                    it.copy(
+                        manifests = manifests,
+                        detectedTemplateId = detectedTemplate
+                    )
+                }
             }
         }
     }
@@ -236,21 +283,29 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         persistChatSettings()
     }
 
+    fun updateTemplate(templateId: String?) {
+        val normalized = templateId?.takeIf { it.isNotBlank() }
+        _uiState.update { it.copy(selectedTemplateId = normalized) }
+        persistChatSettings()
+    }
+
     private fun persistChatSettings() {
         val chatId = activeChatId.value ?: return
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 val dao = repository.database().chatDao()
                 val base = dao.getById(chatId) ?: return@withContext
+                val state = _uiState.value
                 val settings = JSONObject().apply {
-                    put("temperature", _uiState.value.temperature)
-                    put("topP", _uiState.value.topP)
-                    put("topK", _uiState.value.topK)
-                    put("maxTokens", _uiState.value.maxTokens)
+                    put("temperature", state.temperature)
+                    put("topP", state.topP)
+                    put("topK", state.topK)
+                    put("maxTokens", state.maxTokens)
+                    state.selectedTemplateId?.let { put("templateId", it) }
                 }.toString()
                 dao.upsert(
                     base.copy(
-                        systemPrompt = _uiState.value.sysPrompt,
+                        systemPrompt = state.sysPrompt,
                         settingsJson = settings,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -449,7 +504,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 modelPath = manifest.filePath,
-                contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText
+                contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
+                detectedTemplateId = manifestService.detectedTemplateId(manifest)
             )
         }
     }
@@ -594,3 +650,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         return hash.joinToString("") { "%02x".format(it) }
     }
 }
+
+private fun JSONObject.optStringOrNull(key: String): String? =
+    if (has(key)) optString(key)?.takeIf { it.isNotBlank() } else null
+
+private fun JSONObject.optFloatOrNull(key: String): Float? =
+    if (has(key)) {
+        val value = optDouble(key, Double.NaN)
+        if (value.isNaN()) null else value.toFloat()
+    } else {
+        null
+    }
+
+private fun JSONObject.optIntOrNull(key: String): Int? =
+    if (has(key)) optInt(key) else null

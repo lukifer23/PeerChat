@@ -8,6 +8,12 @@ import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 
+data class TemplateOption(
+    val id: String,
+    val label: String,
+    val stopSequences: List<String>,
+)
+
 data class HomeUiState(
     val folders: List<Folder> = emptyList(),
     val chats: List<Chat> = emptyList(),
@@ -31,6 +37,9 @@ data class HomeUiState(
     val topP: Float = 0.9f,
     val topK: Int = 40,
     val maxTokens: Int = 512,
+    val templates: List<TemplateOption> = emptyList(),
+    val selectedTemplateId: String? = null,
+    val detectedTemplateId: String? = null,
     val indexing: Boolean = false,
     val importingModel: Boolean = false
 )

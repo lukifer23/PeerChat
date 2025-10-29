@@ -156,8 +156,9 @@ private fun HomeScreen(navController: NavHostController) {
                 onImportModel = {
                     modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
                 },
-                onOpenModels = { showModels = true },
-                onOpenSettings = { showSettings = true }
+                onOpenModels = { navController.navigate(ROUTE_MODELS) },
+                onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
+                onOpenDocuments = { navController.navigate(ROUTE_DOCUMENTS) }
             )
         }
     ) { innerPadding ->
@@ -491,6 +492,7 @@ private fun HomeTopBar(
     onImportModel: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenDocuments: () -> Unit,
 ) {
     TopAppBar(
         title = { Text("PeerChat") },

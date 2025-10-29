@@ -2,6 +2,7 @@ package com.peerchat.app.engine
 
 import android.content.Context
 import com.peerchat.data.db.ModelManifest
+import com.peerchat.templates.TemplateCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -40,6 +41,20 @@ class ModelManifestService(private val context: Context) {
             put("checksum", checksum)
             put("fileExists", true)
             put("lastScanned", System.currentTimeMillis())
+            val detectionSource = metaObject?.toString()
+                ?: modelMetaJson
+                ?: existing?.metadataJson
+            val modelMetadata = TemplateCatalog.parseMetadata(detectionSource)
+            val detectedTemplate = TemplateCatalog.detect(modelMetadata)
+            put("detectedTemplateId", detectedTemplate)
+            TemplateCatalog.resolve(detectedTemplate)?.let { template ->
+                put("detectedTemplateLabel", template.displayName)
+                put("detectedTemplateStops", template.stopSequences)
+            }
+            modelMetadata.arch?.let { putOpt("arch", it) }
+            modelMetadata.chatTemplate?.let { putOpt("chatTemplate", it) }
+            modelMetadata.tokenizerModel?.let { putOpt("tokenizerModel", it) }
+            modelMetadata.tags?.let { putOpt("tags", it) }
         }
 
         val manifest = ModelManifest(
@@ -76,6 +91,18 @@ class ModelManifestService(private val context: Context) {
         sourceUrl = manifest.sourceUrl,
         isDefault = manifest.isDefault,
     )
+
+    fun detectedTemplateId(manifest: ModelManifest): String? {
+        return manifestMetadata(manifest)?.optString("detectedTemplateId")?.takeIf { it.isNotBlank() }
+    }
+
+    fun detectedTemplateLabel(manifest: ModelManifest): String? {
+        return manifestMetadata(manifest)?.optString("detectedTemplateLabel")?.takeIf { it.isNotBlank() }
+    }
+
+    private fun manifestMetadata(manifest: ModelManifest): JSONObject? {
+        return runCatching { JSONObject(manifest.metadataJson) }.getOrNull()
+    }
 
     private fun computeSha256(file: File): String {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
