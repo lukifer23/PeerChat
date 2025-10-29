@@ -6,7 +6,6 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.navigation.NavHostController
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.ModelConfigStore
@@ -15,6 +14,10 @@ import com.peerchat.app.engine.ModelStateCache
 import com.peerchat.app.engine.ModelStorage
 import com.peerchat.app.engine.StreamingEngine
 import com.peerchat.app.engine.StoredEngineConfig
+import com.peerchat.app.engine.PromptComposer
+import com.peerchat.app.util.optFloatOrNull
+import com.peerchat.app.util.optIntOrNull
+import com.peerchat.app.util.optStringOrNull
 import com.peerchat.data.db.Document
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
@@ -156,6 +159,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val chat = repository.getChat(chatId) ?: return@launch
             val settings = runCatching { JSONObject(chat.settingsJson) }.getOrNull()
             val templateId = settings?.optStringOrNull("templateId")
+                ?.takeIf { candidate -> templateOptions.any { it.id == candidate } }
             val temperature = settings?.optFloatOrNull("temperature")
             val topP = settings?.optFloatOrNull("topP")
             val topK = settings?.optIntOrNull("topK")
@@ -240,6 +244,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
             activeChatId.value = id
             _uiState.update { it.copy(activeChatId = id) }
+            loadChatSettings(id)
         }
     }
 
@@ -248,10 +253,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(selectedFolderId = folderId) }
     }
 
-    fun selectChat(chatId: Long, navController: NavHostController) {
+    fun selectChat(chatId: Long) {
         activeChatId.value = chatId
         _uiState.update { it.copy(activeChatId = chatId) }
-        navController.navigate("chat/$chatId")
+        loadChatSettings(chatId)
     }
 
     fun updateSearchQuery(query: String) {
@@ -284,7 +289,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateTemplate(templateId: String?) {
-        val normalized = templateId?.takeIf { it.isNotBlank() }
+        val normalized = templateId
+            ?.takeIf { it.isNotBlank() }
+            ?.takeIf { candidate -> templateOptions.any { it.id == candidate } }
         _uiState.update { it.copy(selectedTemplateId = normalized) }
         persistChatSettings()
     }
@@ -332,6 +339,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
             activeChatId.value = id
             _uiState.update { it.copy(activeChatId = id) }
+            loadChatSettings(id)
         }
     }
 
@@ -370,6 +378,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             }
             activeChatId.value = newChatId
             _uiState.update { it.copy(activeChatId = newChatId) }
+            loadChatSettings(newChatId)
         }
     }
 
@@ -452,6 +461,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             if (loaded) {
                 ModelConfigStore.save(appContext, config)
                 manifestService.ensureManifestFor(config.modelPath, EngineRuntime.currentModelMeta())
+                val manifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
+                val detectedTemplateId = manifest?.let { manifestService.detectedTemplateId(it) }
                 _uiState.update {
                     it.copy(
                         storedConfig = config,
@@ -459,7 +470,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         threadText = config.threads.toString(),
                         contextText = config.contextLength.toString(),
                         gpuText = config.gpuLayers.toString(),
-                        useVulkan = config.useVulkan
+                        useVulkan = config.useVulkan,
+                        detectedTemplateId = detectedTemplateId
                     )
                 }
                 if (showToast) _events.emit(HomeEvent.Toast("Model loaded"))
@@ -557,6 +569,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             if (!restored) {
                 EngineRuntime.clearState(false)
             }
+            val state = _uiState.value
+            val history = repository.listMessages(chatId)
             repository.insertMessage(
                 com.peerchat.data.db.Message(
                     chatId = chatId,
@@ -574,18 +588,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val retrieved = RagService.retrieve(repository.database(), prompt, topK = 6)
             val ctx = RagService.buildContext(retrieved)
             val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
+            val composition = PromptComposer.compose(
+                PromptComposer.Inputs(
+                    systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
+                    history = history,
+                    nextUserContent = augmented,
+                    selectedTemplateId = state.selectedTemplateId,
+                    detectedTemplateId = state.detectedTemplateId
+                )
+            )
 
             val builder = StringBuilder()
             var success = false
             StreamingEngine.stream(
-                prompt = augmented,
-                systemPrompt = _uiState.value.sysPrompt,
-                template = null,
-                temperature = _uiState.value.temperature,
-                topP = _uiState.value.topP,
-                topK = _uiState.value.topK,
-                maxTokens = _uiState.value.maxTokens,
-                stop = emptyArray()
+                prompt = composition.prompt.text,
+                systemPrompt = null,
+                template = composition.template.id,
+                temperature = state.temperature,
+                topP = state.topP,
+                topK = state.topK,
+                maxTokens = state.maxTokens,
+                stop = composition.prompt.stopSequences.toTypedArray()
             ).collect { event ->
                 when (event) {
                     is EngineStreamEvent.Token -> {
@@ -596,6 +619,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         success = !event.metrics.isError
                         val finalText = builder.toString()
                         onComplete(finalText, event.metrics)
+                        val meta = runCatching { JSONObject(event.metrics.rawJson) }.getOrElse { JSONObject() }
+                        meta.put("templateId", composition.template.id)
                         repository.insertMessage(
                             com.peerchat.data.db.Message(
                                 chatId = chatId,
@@ -606,7 +631,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                                 tps = event.metrics.tps.toFloat(),
                                 contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
                                 createdAt = System.currentTimeMillis(),
-                                metaJson = event.metrics.rawJson
+                                metaJson = meta.toString()
                             )
                         )
                         if (success) {
@@ -651,17 +676,3 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         return hash.joinToString("") { "%02x".format(it) }
     }
 }
-
-private fun JSONObject.optStringOrNull(key: String): String? =
-    if (has(key)) optString(key)?.takeIf { it.isNotBlank() } else null
-
-private fun JSONObject.optFloatOrNull(key: String): Float? =
-    if (has(key)) {
-        val value = optDouble(key, Double.NaN)
-        if (value.isNaN()) null else value.toFloat()
-    } else {
-        null
-    }
-
-private fun JSONObject.optIntOrNull(key: String): Int? =
-    if (has(key)) optInt(key) else null

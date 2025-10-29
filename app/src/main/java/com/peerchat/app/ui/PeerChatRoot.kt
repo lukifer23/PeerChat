@@ -72,6 +72,10 @@ import java.util.regex.Pattern
 
 private const val ROUTE_HOME = "home"
 private const val ROUTE_CHAT = "chat/{chatId}"
+private const val ROUTE_DOCUMENTS = "documents"
+private const val ROUTE_MODELS = "models"
+private const val ROUTE_SETTINGS = "settings"
+private const val ROUTE_REASONING = "reasoning/{chatId}"
 
 @Composable
 fun PeerChatRoot() {
@@ -81,14 +85,6 @@ fun PeerChatRoot() {
             NavHost(navController = navController, startDestination = ROUTE_HOME) {
                 composable(ROUTE_HOME) {
                     HomeScreen(navController = navController)
-                }
-                composable(ROUTE_CHAT) { backStackEntry ->
-                    val chatIdArg = backStackEntry.arguments?.getString("chatId")?.toLongOrNull()
-                    if (chatIdArg != null) {
-                        com.peerchat.app.ui.chat.ChatRoute(chatId = chatIdArg)
-                    } else {
-                        Text("Invalid chat")
-                    }
                 }
             }
         }
@@ -106,23 +102,23 @@ private fun HomeScreen(navController: NavHostController) {
                 return HomeViewModel(application) as T
             }
         }
-    )
+                                )
     val uiState by viewModel.uiState.collectAsState()
     LaunchedEffect(viewModel) {
         viewModel.events.collect { event ->
             when (event) {
                 is HomeEvent.Toast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
+                            }
+                        }
+                    }
 
     var showSettings by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
     var showNewChat by remember { mutableStateOf(false) }
-    val showRenameDialog = remember { mutableStateOf(false) }
-    val showMoveDialog = remember { mutableStateOf(false) }
-    val showForkDialog = remember { mutableStateOf(false) }
+                val showRenameDialog = remember { mutableStateOf(false) }
+                val showMoveDialog = remember { mutableStateOf(false) }
+                val showForkDialog = remember { mutableStateOf(false) }
     val renameTargetId = remember { mutableStateOf<Long?>(null) }
     val moveTargetId = remember { mutableStateOf<Long?>(null) }
     val forkTargetId = remember { mutableStateOf<Long?>(null) }
@@ -151,10 +147,10 @@ private fun HomeScreen(navController: NavHostController) {
                     showNewChat = true
                 },
                 onImportDoc = {
-                    documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
+                            documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
                 },
                 onImportModel = {
-                    modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
+                            modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
                 },
                 onOpenModels = { navController.navigate(ROUTE_MODELS) },
                 onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
@@ -176,23 +172,23 @@ private fun HomeScreen(navController: NavHostController) {
             ) {
                 StatusRow(status = uiState.engineStatus, metrics = uiState.engineMetrics)
                 ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
+                        OutlinedTextField(
                         value = uiState.searchQuery,
                         onValueChange = viewModel::updateSearchQuery,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
-                        singleLine = true,
-                        placeholder = { Text("Search messages and docs…") }
-                    )
-                }
+                            singleLine = true,
+                            placeholder = { Text("Search messages and docs…") }
+                        )
+                    }
                 if (uiState.searchResults.isNotEmpty()) {
                     SectionCard(title = "Search Results") {
                         uiState.searchResults.forEach { result ->
                             Text(result, style = MaterialTheme.typography.bodyMedium)
                         }
+                        }
                     }
-                }
                 if (isCompact) {
                     Column(verticalArrangement = Arrangement.spacedBy(bodySpacing)) {
                         SectionCard(
@@ -236,18 +232,41 @@ private fun HomeScreen(navController: NavHostController) {
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
-                                                showRenameDialog.value = true
+                                            showRenameDialog.value = true
                                             },
                                             "Move" to {
                                                 moveTargetId.value = chat.id
-                                                showMoveDialog.value = true
+                                            showMoveDialog.value = true
                                             },
                                             "Fork" to {
                                                 forkTargetId.value = chat.id
-                                                showForkDialog.value = true
+                                            showForkDialog.value = true
                                             }
                                         )
                                     )
+                        }
+                            }
+                        }
+
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 360.dp)
+                        ) {
+                            if (uiState.activeChatId != null) {
+                                ChatScreen(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    enabled = true,
+                                    messages = uiState.messages,
+                                    onSend = { prompt, onToken, onComplete ->
+                                        viewModel.sendPrompt(prompt, onToken, onComplete)
+                                    }
+                                )
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
                                 }
                             }
                         }
@@ -295,7 +314,7 @@ private fun HomeScreen(navController: NavHostController) {
                             ) {
                                 if (uiState.chats.isEmpty()) {
                                     EmptyListHint("No chats yet.")
-                                } else {
+                                    } else {
                                     uiState.chats.forEach { chat ->
                                         HomeListRow(
                                             title = chat.title,
@@ -348,118 +367,118 @@ private fun HomeScreen(navController: NavHostController) {
         }
     }
 
-    if (showModels) {
-        AlertDialog(
-            onDismissRequest = { showModels = false },
-            confirmButton = { TextButton(onClick = { showModels = false }) { Text("Close") } },
-            title = { Text("Models") },
-            text = {
+                if (showModels) {
+                    AlertDialog(
+                        onDismissRequest = { showModels = false },
+                        confirmButton = { TextButton(onClick = { showModels = false }) { Text("Close") } },
+                        title = { Text("Models") },
+                        text = {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    DefaultModels.list.forEach { model ->
-                        val workState = rememberDownloadState(model)
+                                DefaultModels.list.forEach { model ->
+                                    val workState = rememberDownloadState(model)
                         val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
-                        ModelCatalogRow(
-                            model = model,
-                            manifest = manifest,
-                            workState = workState,
+                                    ModelCatalogRow(
+                                        model = model,
+                                        manifest = manifest,
+                                        workState = workState,
                             onDownload = { ModelDownloadManager.enqueue(context, model) },
                             onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
                             onOpenCard = { openUrl(context, model.cardUrl) }
-                        )
-                        HorizontalDivider()
-                    }
-                }
-            }
-        )
-    }
-
-    if (showRenameDialog.value && renameTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showRenameDialog.value = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    val id = renameTargetId.value ?: return@TextButton
-                    viewModel.renameChat(id, tempName.text)
-                    showRenameDialog.value = false
-                }) { Text("Save") }
-            },
-            dismissButton = { TextButton(onClick = { showRenameDialog.value = false }) { Text("Cancel") } },
-            title = { Text("Rename Chat") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }) }
-        )
-    }
-
-    if (showMoveDialog.value && moveTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showMoveDialog.value = false },
-            confirmButton = { TextButton(onClick = { showMoveDialog.value = false }) { Text("Close") } },
-            title = { Text("Move Chat to Folder") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        val id = moveTargetId.value ?: return@TextButton
-                        viewModel.moveChat(id, null)
-                        showMoveDialog.value = false
-                    }) { Text("No folder") }
-                    LazyColumn(Modifier.heightIn(max = 240.dp)) {
-                        items(uiState.folders) { folder ->
-                            TextButton(onClick = {
-                                val id = moveTargetId.value ?: return@TextButton
-                                viewModel.moveChat(id, folder.id)
-                                showMoveDialog.value = false
-                            }) { Text(folder.name) }
+                                    )
+                                    HorizontalDivider()
+                                }
+                            }
                         }
-                    }
+                    )
                 }
-            }
-        )
-    }
 
-    if (showForkDialog.value && forkTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showForkDialog.value = false },
-            confirmButton = {
-                TextButton(onClick = {
+                if (showRenameDialog.value && renameTargetId.value != null) {
+                    AlertDialog(
+                        onDismissRequest = { showRenameDialog.value = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val id = renameTargetId.value ?: return@TextButton
+                    viewModel.renameChat(id, tempName.text)
+                                    showRenameDialog.value = false
+                            }) { Text("Save") }
+                        },
+                        dismissButton = { TextButton(onClick = { showRenameDialog.value = false }) { Text("Cancel") } },
+                        title = { Text("Rename Chat") },
+                        text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }) }
+                    )
+                }
+
+                if (showMoveDialog.value && moveTargetId.value != null) {
+                    AlertDialog(
+                        onDismissRequest = { showMoveDialog.value = false },
+                        confirmButton = { TextButton(onClick = { showMoveDialog.value = false }) { Text("Close") } },
+                        title = { Text("Move Chat to Folder") },
+                        text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    val id = moveTargetId.value ?: return@TextButton
+                        viewModel.moveChat(id, null)
+                                        showMoveDialog.value = false
+                                }) { Text("No folder") }
+                                LazyColumn(Modifier.heightIn(max = 240.dp)) {
+                        items(uiState.folders) { folder ->
+                                        TextButton(onClick = {
+                                            val id = moveTargetId.value ?: return@TextButton
+                                viewModel.moveChat(id, folder.id)
+                                                showMoveDialog.value = false
+                            }) { Text(folder.name) }
+                                    }
+                                }
+                            }
+                        }
+                    )
+                }
+
+                if (showForkDialog.value && forkTargetId.value != null) {
+                    AlertDialog(
+                        onDismissRequest = { showForkDialog.value = false },
+                        confirmButton = {
+                            TextButton(onClick = {
                     val id = forkTargetId.value ?: return@TextButton
                     viewModel.forkChat(id)
-                    showForkDialog.value = false
-                }) { Text("Fork") }
-            },
-            dismissButton = { TextButton(onClick = { showForkDialog.value = false }) { Text("Cancel") } },
-            title = { Text("Fork Chat") },
+                                    showForkDialog.value = false
+                            }) { Text("Fork") }
+                        },
+                        dismissButton = { TextButton(onClick = { showForkDialog.value = false }) { Text("Cancel") } },
+                        title = { Text("Fork Chat") },
             text = { Text("Create a duplicate conversation including existing messages?") }
-        )
-    }
+                    )
+                }
 
-    if (showNewFolder) {
-        AlertDialog(
-            onDismissRequest = { showNewFolder = false },
-            confirmButton = {
-                TextButton(onClick = {
+                if (showNewFolder) {
+                    AlertDialog(
+                        onDismissRequest = { showNewFolder = false },
+                        confirmButton = {
+                            TextButton(onClick = {
                     viewModel.createFolder(tempName.text)
-                    showNewFolder = false
-                }) { Text("Create") }
-            },
-            dismissButton = { TextButton(onClick = { showNewFolder = false }) { Text("Cancel") } },
-            title = { Text("New Folder") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Folder name") }) }
-        )
-    }
+                                        showNewFolder = false
+                            }) { Text("Create") }
+                        },
+                        dismissButton = { TextButton(onClick = { showNewFolder = false }) { Text("Cancel") } },
+                        title = { Text("New Folder") },
+                        text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Folder name") }) }
+                    )
+                }
 
-    if (showNewChat) {
-        AlertDialog(
-            onDismissRequest = { showNewChat = false },
-            confirmButton = {
-                TextButton(onClick = {
+                if (showNewChat) {
+                    AlertDialog(
+                        onDismissRequest = { showNewChat = false },
+                        confirmButton = {
+                            TextButton(onClick = {
                     viewModel.createChat(tempName.text)
-                    showNewChat = false
-                }) { Text("Create") }
-            },
-            dismissButton = { TextButton(onClick = { showNewChat = false }) { Text("Cancel") } },
-            title = { Text("New Chat") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Chat title") }) }
-        )
-    }
+                                    showNewChat = false
+                            }) { Text("Create") }
+                        },
+                        dismissButton = { TextButton(onClick = { showNewChat = false }) { Text("Cancel") } },
+                        title = { Text("New Chat") },
+                        text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Chat title") }) }
+                    )
+                }
 
     if (showSettings) {
         SettingsDialog(
@@ -595,8 +614,8 @@ private fun ColumnScope.HomeListRow(
             )
             subtitle?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
+    }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             actions.forEach { (label, handler) ->
                 TextButton(onClick = handler) { Text(label) }
@@ -797,6 +816,135 @@ private fun formatBytes(bytes: Long): String {
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
     val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
     return "${String.format(Locale.US, "%.2f", bytes / Math.pow(1024.0, digitGroups.toDouble()))} ${units[digitGroups]}"
+}
+
+@Composable
+private fun ChatScreen(
+    modifier: Modifier = Modifier,
+    enabled: Boolean,
+    messages: List<com.peerchat.data.db.Message>,
+    onSend: (String, (String) -> Unit, (String, com.peerchat.engine.EngineMetrics) -> Unit) -> Unit,
+) {
+    var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+    var streaming by remember { mutableStateOf(false) }
+    var current by remember { mutableStateOf("Assistant: ") }
+    var metricsState by remember { mutableStateOf<com.peerchat.engine.EngineMetrics?>(null) }
+    val clipboard = LocalClipboardManager.current
+    var reasoning by remember { mutableStateOf("") }
+    var showReasoning by remember { mutableStateOf(false) }
+    var inReasoning by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        LazyColumn(Modifier.weight(1f)) {
+            items(messages) { msg ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    val roleLabel = if (msg.role == "user") "You:" else "Assistant:"
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(roleLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        MarkdownText(msg.contentMarkdown)
+                    }
+                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg.contentMarkdown)) }) { Text("Copy") }
+                }
+            }
+            item {
+                if (reasoning.isNotEmpty()) {
+                    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Reasoning", style = MaterialTheme.typography.titleSmall)
+                            TextButton(onClick = { showReasoning = !showReasoning }) { Text(if (showReasoning) "Hide" else "Show") }
+                        }
+                        if (showReasoning) {
+                            Text(reasoning)
+                        }
+                    }
+                }
+                if (current != "Assistant: ") {
+                    Column(Modifier.fillMaxWidth()) {
+                        MarkdownText(current)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(current)) }) { Text("Copy") }
+                        }
+                        val codeBlocks = remember(current) { extractCodeBlocks(current) }
+                        if (codeBlocks.isNotEmpty()) {
+                            Column(Modifier.fillMaxWidth()) {
+                                codeBlocks.forEachIndexed { idx, block ->
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(block)) }) {
+                                            Text("Copy code #${idx + 1}")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        metricsState?.let { metric ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("TTFS: ${metric.ttfsMs.toInt()} ms")
+                Text("TPS: ${"%.2f".format(metric.tps)}")
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Type a message…") }
+            )
+            Button(
+                enabled = enabled && !streaming && input.text.isNotBlank(),
+                onClick = {
+                    if (!enabled) return@Button
+                    val prompt = input.text
+                    input = androidx.compose.ui.text.input.TextFieldValue("")
+                    current = "Assistant: "
+                    metricsState = null
+                    reasoning = ""
+                    inReasoning = false
+                    streaming = true
+                    onSend(prompt, { token ->
+                        val t = token
+                        if (!inReasoning && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
+                            inReasoning = true
+                        }
+                        if (inReasoning) {
+                            reasoning += t
+                        } else {
+                            current += t
+                        }
+                        if (inReasoning && (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>"))) {
+                            inReasoning = false
+                        }
+                    }, { _, metrics ->
+                        streaming = false
+                        metricsState = metrics
+                        current = "Assistant: "
+                        reasoning = ""
+                        inReasoning = false
+                    })
+                }
+            ) { Text("Send") }
+        }
+    }
+}
+
+private fun extractCodeBlocks(markdown: String): List<String> {
+    val pattern = Pattern.compile("```[a-zA-Z0-9_-]*\\n([\\s\\S]*?)```", Pattern.MULTILINE)
+    val matcher = pattern.matcher(markdown)
+    val out = mutableListOf<String>()
+    while (matcher.find()) {
+        out.add(matcher.group(1) ?: "")
+    }
+    return out
 }
 
 private fun openUrl(context: android.content.Context, url: String) {

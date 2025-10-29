@@ -52,6 +52,9 @@ interface MessageDao {
 interface DocumentDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(doc: Document): Long
+
+    @Query("SELECT * FROM documents ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<Document>>
 }
 
 @Dao
