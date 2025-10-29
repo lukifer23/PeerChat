@@ -24,6 +24,15 @@ The project is organized as a multi-module Android application:
 - **templates**: Model template definitions
 - **docs**: Documentation and resources
 
+## UI Overview
+
+The home experience is implemented in `PeerChatRoot` as a Navigation Compose destination with adaptive layout rules:
+
+- On phones, folders/chats stack vertically with the chat surface presented in an elevated card.
+- On larger devices, the layout expands into a two-column workspace with list management on the left and the threaded conversation on the right.
+- Top-level actions (new chat, document/model import, settings) surface as Material chips in the app bar, keeping critical workflows one tap away.
+- Settings, model catalogue, and RAG results share a common card-based design system for consistent spacing, typography, and accessibility.
+
 ## Requirements
 
 - Android SDK 26+ (Android 8.0)

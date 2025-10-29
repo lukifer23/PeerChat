@@ -421,11 +421,15 @@ private fun HomeScreen(navController: NavHostController) {
                                 .fillMaxWidth()
                                 .heightIn(min = 360.dp)
                         ) {
-                            ChatScreen(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(16.dp),
-                                onSend = { prompt, appendToken, onDone ->
+                            val currentChatId = chatIdState.value ?: 0L
+                            if (currentChatId > 0) {
+                                ChatScreen(
+                                    chatId = currentChatId,
+                                    db = db,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    onSend = { prompt, appendToken, onDone ->
                                     coroutineScope.launch {
                                         val chatId = chatIdState.value ?: return@launch
                                         val restored = modelCache.restore(chatId)
@@ -497,6 +501,11 @@ private fun HomeScreen(navController: NavHostController) {
                                     }
                                 }
                             )
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select a chat to start", style = MaterialTheme.typography.bodyLarge)
+                                }
+                            }
                         }
                     }
                 } else {
@@ -572,11 +581,15 @@ private fun HomeScreen(navController: NavHostController) {
                                 .weight(1f)
                                 .fillMaxHeight()
                         ) {
-                            ChatScreen(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(16.dp),
-                                onSend = { prompt, appendToken, onDone ->
+                            val currentChatId2 = chatIdState.value ?: 0L
+                            if (currentChatId2 > 0) {
+                                ChatScreen(
+                                    chatId = currentChatId2,
+                                    db = db,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    onSend = { prompt, appendToken, onDone ->
                                     coroutineScope.launch {
                                         val chatId = chatIdState.value ?: return@launch
                                         val restored = modelCache.restore(chatId)
@@ -1020,12 +1033,15 @@ private fun ColumnScope.HomeListRow(
 
 @Composable
 private fun ChatScreen(
+    chatId: Long,
+    db: com.peerchat.data.db.PeerDatabase,
     modifier: Modifier = Modifier,
     onSend: (String, (String) -> Unit, (EngineMetrics) -> Unit) -> Unit,
     onFinalize: (String, EngineMetrics) -> Unit,
 ) {
     var input by remember { mutableStateOf(TextFieldValue("")) }
-    var messages by remember { mutableStateOf(listOf<String>()) }
+    val messagesFlow = remember(chatId) { db.messageDao().observeByChat(chatId) }
+    val messages by messagesFlow.collectAsState(initial = emptyList())
     var streaming by remember { mutableStateOf(false) }
     var current by remember { mutableStateOf("") }
     var metrics by remember { mutableStateOf<EngineMetrics?>(null) }
@@ -1040,9 +1056,14 @@ private fun ChatScreen(
     ) {
         LazyColumn(Modifier.weight(1f)) {
             items(messages) { msg ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(msg, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(msg)) }) { Text("Copy") }
+                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp), colors = CardDefaults.cardColors(
+                    containerColor = if (msg.role == "user") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                )) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(msg.role.uppercase(java.util.Locale.US), style = MaterialTheme.typography.labelSmall)
+                        Spacer(Modifier.height(4.dp))
+                        MarkdownText(msg.contentMarkdown)
+                    }
                 }
             }
             item {
@@ -1095,7 +1116,6 @@ private fun ChatScreen(
             Button(enabled = !streaming && input.text.isNotBlank(), onClick = {
                 val prompt = input.text
                 input = TextFieldValue("")
-                messages = messages + ("You: " + prompt)
                 current = "Assistant: "
                 metrics = null
                 reasoning = ""
@@ -1118,7 +1138,6 @@ private fun ChatScreen(
                     streaming = false
                     metrics = m
                     val finalText = current.removePrefix("Assistant: ").trimStart()
-                    messages = messages + current
                     current = ""
                     onFinalize(finalText, m)
                 })

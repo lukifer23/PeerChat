@@ -16,9 +16,9 @@
 ## Current Baseline Snapshot
 - Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git history initialized.
 - Native engine (llama.cpp) supports Vulkan, structured streaming, metrics capture, KV snapshotting, and GGUF metadata detection exposed through `EngineRuntime`.
-- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore.
+- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore, exposed through a responsive Navigation Compose shell.
 - Data layer (Room v2) includes manifests, chats, documents, embeddings, and RAG chunks with migrations replacing destructive fallback; RagService still uses naive chunking + cosine retrieval.
-- Model settings dialog allows manual load/unload, thread/Vulkan tuning, and auto-registers imported GGUF files; download workflows, checksum verification, template selection, and navigation architecture remain outstanding.
+- Model settings dialog allows manual load/unload, thread/Vulkan tuning, and auto-registers imported GGUF files; download workflows, checksum verification, template selection, and ViewModel-backed orchestration remain outstanding.
 
 ## Workstreams & Key Tasks
 
@@ -47,11 +47,11 @@
 - Support per-chat vs global corpora, context assembly with deduplication, token budgeting, and prompt templating.
 
 ### 5. UI/UX Architecture
-- Adopt Navigation Compose with dedicated screens: Home, Chat, Documents, Model Manager, Settings, Reasoning inspector.
+- Navigation Compose shell with responsive home layout is in place; expand to additional screens (Documents, Model Manager, Settings, Reasoning inspector).
 - Introduce ViewModel-backed state management (Flows, SavedState) and extract business logic from composables.
 - Build modular chat experience: streaming bubbles, code-specific copy, per-message metrics drawer, reasoning timeline.
 - Add model picker + runtime controls, global search (lexical+semantic), chat fork lineage UI, explicit export/share pipeline.
-- Ensure responsive layout for large screens; provide themes, high-contrast mode, and accessibility affordances.
+- Ensure responsive layout for large screens; extend design system (spacing, typography, palettes) and provide accessibility affordances.
 
 ### 6. Security & Privacy
 - Store secrets in `EncryptedSharedPreferences`; isolate models/docs in app sandbox.
@@ -121,6 +121,6 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Add manifest presets + template detection from GGUF metadata, surfacing recommended configs (Workstream 2).
-2. Implement user-facing checksum verification UI and integrity alerts (Workstream 2/6).
-3. Begin Navigation Compose refactor with ViewModel-backed state to host forthcoming model manager and documents screens (Workstream 5).
+1. Introduce repository/ViewModel layer for chats, folders, manifests, and engine state to decouple UI from direct database calls (Workstreams 2/3/5).
+2. Add manifest presets plus checksum verification for catalog downloads, surfacing integrity alerts in UI (Workstreams 2/6).
+3. Replace naive RAG chunking with tokenizer-aware segmentation and prepare ANN persistence design (Workstream 4).

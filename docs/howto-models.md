@@ -17,6 +17,8 @@ PeerChat runs entirely offline. All language models must be present on the devic
 
 The Settings dialog and the **Models** chip in the top bar list curated defaults sourced from `defaultmodels.md`. Press **Download** to enqueue a background download managed by WorkManager. Progress appears inline, and once complete the file is registered in the manifest automatically.
 
+> While a download is running, the chip shows an in-progress state and the catalog entry displays the current work status. You can safely leave the screen; WorkManager will resume the transfer when the device is available.
+
 ## Loading and Unloading
 
 Inside Settings:
