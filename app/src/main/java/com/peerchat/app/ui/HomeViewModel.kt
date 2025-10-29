@@ -64,6 +64,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         observeSearch()
         observeEngine()
         observeManifests()
+        observeMessages()
         restoreModelConfig()
     }
 
@@ -107,23 +108,32 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             searchQuery
                 .debounce(200)
                 .distinctUntilChanged()
-                .flatMapLatest { query ->
-                    viewModelScope.launch {
-                        val trimmed = query.trim()
-                        val results = if (trimmed.isEmpty()) {
-                            emptyList()
-                        } else {
-                            val messages = repository.searchMessages(trimmed, 20)
-                                .map { "Msg: " + it.contentMarkdown }
-                            val chunks = repository.searchChunks(trimmed, 20)
-                                .map { "Doc: " + it.text }
-                            (messages + chunks).take(50)
-                        }
-                        _uiState.update { it.copy(searchQuery = query, searchResults = results) }
+                .collectLatest { query ->
+                    val trimmed = query.trim()
+                    val results = if (trimmed.isEmpty()) {
+                        emptyList()
+                    } else {
+                        val messages = repository.searchMessages(trimmed, 20)
+                            .map { "Msg: " + it.contentMarkdown }
+                        val chunks = repository.searchChunks(trimmed, 20)
+                            .map { "Doc: " + it.text }
+                        (messages + chunks).take(50)
                     }
-                    kotlinx.coroutines.flow.emptyFlow<Unit>()
+                    _uiState.update { it.copy(searchQuery = query, searchResults = results) }
                 }
-                .collect()
+        }
+    }
+
+    private fun observeMessages() {
+        viewModelScope.launch {
+            activeChatId
+                .flatMapLatest { id ->
+                    if (id == null) kotlinx.coroutines.flow.flowOf(emptyList())
+                    else repository.database().messageDao().observeByChat(id)
+                }
+                .collectLatest { msgs ->
+                    _uiState.update { it.copy(messages = msgs) }
+                }
         }
     }
 
@@ -227,22 +237,16 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private fun persistChatSettings() {
         val chatId = activeChatId.value ?: return
         viewModelScope.launch {
-            val base = repository.getChat(chatId) ?: return@launch
-            val settings = JSONObject().apply {
-                put("temperature", _uiState.value.temperature)
-                put("topP", _uiState.value.topP)
-                put("topK", _uiState.value.topK)
-                put("maxTokens", _uiState.value.maxTokens)
-            }.toString()
-            repository.createChat(
-                title = base.title,
-                folderId = base.folderId,
-                systemPrompt = _uiState.value.sysPrompt,
-                modelId = base.modelId
-            )
-            // Upsert returns a new id; we need to call DAO directly for update.
             withContext(Dispatchers.IO) {
-                repository.database().chatDao().upsert(
+                val dao = repository.database().chatDao()
+                val base = dao.getById(chatId) ?: return@withContext
+                val settings = JSONObject().apply {
+                    put("temperature", _uiState.value.temperature)
+                    put("topP", _uiState.value.topP)
+                    put("topK", _uiState.value.topK)
+                    put("maxTokens", _uiState.value.maxTokens)
+                }.toString()
+                dao.upsert(
                     base.copy(
                         systemPrompt = _uiState.value.sysPrompt,
                         settingsJson = settings,
@@ -333,6 +337,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadModelFromInputs() {
+        if (_uiState.value.importingModel) return
         val state = _uiState.value
         val threads = state.threadText.toIntOrNull()
         val contextLength = state.contextText.toIntOrNull()

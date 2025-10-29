@@ -16,7 +16,7 @@
 ## Current Baseline Snapshot
 - Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git history initialized.
 - Native engine (llama.cpp) supports Vulkan, structured streaming, metrics capture, KV snapshotting, and GGUF metadata detection exposed through `EngineRuntime`.
-- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore, exposed through a responsive Navigation Compose shell.
+- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore, exposed through a responsive Navigation Compose shell driven by `HomeViewModel` + repository state.
 - Data layer (Room v2) includes manifests, chats, documents, embeddings, and RAG chunks with migrations replacing destructive fallback; RagService still uses naive chunking + cosine retrieval.
 - Model settings dialog allows manual load/unload, thread/Vulkan tuning, and auto-registers imported GGUF files; download workflows, checksum verification, template selection, and ViewModel-backed orchestration remain outstanding.
 
@@ -47,8 +47,8 @@
 - Support per-chat vs global corpora, context assembly with deduplication, token budgeting, and prompt templating.
 
 ### 5. UI/UX Architecture
-- Navigation Compose shell with responsive home layout is in place; expand to additional screens (Documents, Model Manager, Settings, Reasoning inspector).
-- Introduce ViewModel-backed state management (Flows, SavedState) and extract business logic from composables.
+- Navigation Compose shell with responsive home layout is in place; Home screen now runs on `HomeViewModel`/`PeerChatRepository`. Expand the pattern to additional screens (Documents, Model Manager, Settings, Reasoning inspector).
+- Extend ViewModel-backed state management (Flows, SavedState) beyond home; lift remaining business logic (downloads, RAG, metrics overlays) out of composables.
 - Build modular chat experience: streaming bubbles, code-specific copy, per-message metrics drawer, reasoning timeline.
 - Add model picker + runtime controls, global search (lexical+semantic), chat fork lineage UI, explicit export/share pipeline.
 - Ensure responsive layout for large screens; extend design system (spacing, typography, palettes) and provide accessibility affordances.

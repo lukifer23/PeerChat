@@ -3,6 +3,7 @@ package com.peerchat.app.ui
 import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.data.db.Chat
 import com.peerchat.data.db.Folder
+import com.peerchat.data.db.Message
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
@@ -10,6 +11,7 @@ import com.peerchat.engine.EngineRuntime
 data class HomeUiState(
     val folders: List<Folder> = emptyList(),
     val chats: List<Chat> = emptyList(),
+    val messages: List<Message> = emptyList(),
     val selectedFolderId: Long? = null,
     val activeChatId: Long? = null,
     val searchQuery: String = "",
