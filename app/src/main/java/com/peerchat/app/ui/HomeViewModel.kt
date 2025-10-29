@@ -346,6 +346,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun deleteFolder(folderId: Long) {
+        viewModelScope.launch {
+            val result = chatService.deleteFolder(folderId)
+            _events.emit(HomeEvent.Toast(result.message))
+        }
+    }
+
+    fun deleteChat(chatId: Long) {
+        viewModelScope.launch {
+            val result = chatService.deleteChat(chatId)
+            _events.emit(HomeEvent.Toast(result.message))
+        }
+    }
+
     fun renameChat(chatId: Long, title: String) {
         viewModelScope.launch {
             val result = chatService.renameChat(chatId, title)

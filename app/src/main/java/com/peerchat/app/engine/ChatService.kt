@@ -135,4 +135,22 @@ class ChatService(private val repository: PeerChatRepository) {
     suspend fun getMessages(chatId: Long): List<Message> = withContext(Dispatchers.IO) {
         repository.listMessages(chatId)
     }
+
+    suspend fun deleteFolder(folderId: Long): UpdateResult = withContext(Dispatchers.IO) {
+        try {
+            repository.database().folderDao().delete(folderId)
+            UpdateResult(success = true, message = "Folder deleted")
+        } catch (e: Exception) {
+            UpdateResult(success = false, message = "Delete error: ${e.message}")
+        }
+    }
+
+    suspend fun deleteChat(chatId: Long): UpdateResult = withContext(Dispatchers.IO) {
+        try {
+            repository.deleteChat(chatId)
+            UpdateResult(success = true, message = "Chat deleted")
+        } catch (e: Exception) {
+            UpdateResult(success = false, message = "Delete error: ${e.message}")
+        }
+    }
 }

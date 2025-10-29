@@ -89,6 +89,20 @@ class PeerChatRepository(private val database: PeerDatabase) {
         database.modelManifestDao().listAll()
     }
 
+    suspend fun deleteChat(chatId: Long) {
+        database.chatDao().delete(chatId)
+    }
+
+    suspend fun updateChatSettings(chatId: Long, systemPrompt: String?, modelId: String?) {
+        val chat = database.chatDao().getById(chatId) ?: return
+        val updated = chat.copy(
+            systemPrompt = systemPrompt ?: chat.systemPrompt,
+            modelId = modelId ?: chat.modelId,
+            updatedAt = System.currentTimeMillis()
+        )
+        database.chatDao().upsert(updated)
+    }
+
     fun database(): PeerDatabase = database
 
     companion object {

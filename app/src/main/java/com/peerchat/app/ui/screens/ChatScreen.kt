@@ -28,27 +28,47 @@ import com.peerchat.data.db.Message
 import com.peerchat.engine.EngineMetrics
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import java.util.regex.Pattern
+import androidx.compose.material3.Scaffold
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TopAppBar
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     modifier: Modifier = Modifier,
-    enabled: Boolean,
     messages: List<Message>,
     onSend: (String, (String) -> Unit, (String, EngineMetrics) -> Unit) -> Unit,
+    onBack: () -> Unit
 ) {
-    var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
-    var streaming by remember { mutableStateOf(false) }
-    var current by remember { mutableStateOf("Assistant: ") }
-    var metricsState by remember { mutableStateOf<EngineMetrics?>(null) }
-    val clipboard = LocalClipboardManager.current
-    var reasoning by remember { mutableStateOf("") }
-    var showReasoning by remember { mutableStateOf(false) }
-    var inReasoning by remember { mutableStateOf(false) }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Chat") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+        var streaming by remember { mutableStateOf(false) }
+        var current by remember { mutableStateOf("Assistant: ") }
+        var metricsState by remember { mutableStateOf<EngineMetrics?>(null) }
+        val clipboard = LocalClipboardManager.current
+        var reasoning by remember { mutableStateOf("") }
+        var showReasoning by remember { mutableStateOf(false) }
+        var inReasoning by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+        Column(
+            modifier = modifier.fillMaxSize().padding(innerPadding),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
         LazyColumn(Modifier.weight(1f)) {
             items(messages) { msg ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -131,9 +151,8 @@ fun ChatScreen(
                 placeholder = { Text("Type a message…") }
             )
             androidx.compose.material3.Button(
-                enabled = enabled && !streaming && input.text.isNotBlank(),
+                enabled = !streaming && input.text.isNotBlank(),
                 onClick = {
-                    if (!enabled) return@Button
                     val prompt = input.text
                     input = androidx.compose.ui.text.input.TextFieldValue("")
                     current = "Assistant: "
@@ -164,6 +183,7 @@ fun ChatScreen(
                 }
             ) { Text("Send") }
         }
+    }
     }
 }
 

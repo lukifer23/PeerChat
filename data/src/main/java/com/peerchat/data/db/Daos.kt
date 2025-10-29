@@ -13,6 +13,9 @@ interface FolderDao {
 
     @Query("SELECT * FROM folders ORDER BY updatedAt DESC")
     fun observeAll(): Flow<List<Folder>>
+
+    @Query("DELETE FROM folders WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao
@@ -31,6 +34,9 @@ interface ChatDao {
 
     @Query("SELECT * FROM chats WHERE id = :id")
     suspend fun getById(id: Long): Chat?
+
+    @Query("DELETE FROM chats WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao

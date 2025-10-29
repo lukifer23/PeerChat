@@ -35,7 +35,6 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -175,28 +174,6 @@ fun HomeScreen(
                 }
                 if (isCompact) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 260.dp)
-                        ) {
-                            if (uiState.activeChatId != null) {
-                                ChatScreen(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    enabled = true,
-                                    messages = uiState.messages,
-                                    onSend = { prompt, onToken, onComplete ->
-                                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                                    }
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
-                                }
-                            }
-                        }
                         SectionCard(
                             title = "Folders",
                             actionLabel = "New",
@@ -212,8 +189,9 @@ fun HomeScreen(
                                     HomeListRow(
                                         title = folder.name,
                                         subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
+                                        onClick = { viewModel.selectFolder(folder.id) },
                                         actions = listOf(
-                                            "Open" to { viewModel.selectFolder(folder.id) }
+                                            "Delete" to { viewModel.deleteFolder(folder.id) }
                                         )
                                     )
                                 }
@@ -233,8 +211,8 @@ fun HomeScreen(
                                 uiState.chats.forEach { chat ->
                                     HomeListRow(
                                         title = chat.title,
+                                        onClick = { navController.navigate("chat/${chat.id}") },
                                         actions = listOf(
-                                            "Open" to { viewModel.selectChat(chat.id) },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
@@ -247,7 +225,8 @@ fun HomeScreen(
                                             "Fork" to {
                                                 forkTargetId.value = chat.id
                                                 showForkDialog.value = true
-                                            }
+                                            },
+                                            "Delete" to { viewModel.deleteChat(chat.id) }
                                         )
                                     )
                                 }
@@ -319,28 +298,6 @@ fun HomeScreen(
                                             )
                                         )
                                     }
-                                }
-                            }
-                        }
-                        ElevatedCard(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                        ) {
-                            if (uiState.activeChatId != null) {
-                                ChatScreen(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    enabled = true,
-                                    messages = uiState.messages,
-                                    onSend = { prompt, onToken, onComplete ->
-                                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                                    }
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
                                 }
                             }
                         }
