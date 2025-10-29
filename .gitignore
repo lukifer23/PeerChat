@@ -1,0 +1,33 @@
+# Android/Gradle build outputs
+**/build/
+**/captures/
+**/outputs/
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+.gradle/
+local.properties
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# NDK/LLM assets
+app/src/main/assets/models/
+app/src/main/assets/tokenizers/
+
+# Logs and coverage
+*.log
+*.hprof
+*.ec
+
+# Generated benchmark data
+benchmark-results/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+
+**/.cxx/

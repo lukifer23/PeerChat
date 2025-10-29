@@ -1,0 +1,77 @@
+package com.peerchat.data.db
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface FolderDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(folder: Folder): Long
+
+    @Query("SELECT * FROM folders ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<Folder>>
+}
+
+@Dao
+interface ChatDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(chat: Chat): Long
+
+    @Query("SELECT * FROM chats WHERE folderId IS :folderId ORDER BY updatedAt DESC")
+    fun observeByFolder(folderId: Long?): Flow<List<Chat>>
+
+    @Query("UPDATE chats SET title = :title, updatedAt = :now WHERE id = :id")
+    suspend fun rename(id: Long, title: String, now: Long)
+
+    @Query("UPDATE chats SET folderId = :folderId, updatedAt = :now WHERE id = :id")
+    suspend fun moveToFolder(id: Long, folderId: Long?, now: Long)
+
+    @Query("SELECT * FROM chats WHERE id = :id")
+    suspend fun getById(id: Long): Chat?
+}
+
+@Dao
+interface MessageDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(message: Message): Long
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY id ASC")
+    fun observeByChat(chatId: Long): Flow<List<Message>>
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY id ASC")
+    suspend fun listByChat(chatId: Long): List<Message>
+
+    @Query("SELECT messages.* FROM messages JOIN messages_fts ON(messages_fts.contentMarkdown MATCH :query) WHERE messages.rowid = messages_fts.rowid ORDER BY messages.id DESC LIMIT :limit")
+    suspend fun searchText(query: String, limit: Int = 50): List<Message>
+}
+
+@Dao
+interface DocumentDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(doc: Document): Long
+}
+
+@Dao
+interface EmbeddingDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(embedding: Embedding): Long
+
+    @Query("SELECT * FROM embeddings")
+    suspend fun listAll(): List<Embedding>
+}
+
+@Dao
+interface RagDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertChunk(chunk: RagChunk): Long
+
+    @Query("SELECT rag_chunks.* FROM rag_chunks JOIN rag_chunks_fts ON(rag_chunks_fts.text MATCH :query) WHERE rag_chunks.rowid = rag_chunks_fts.rowid ORDER BY rag_chunks.id DESC LIMIT :limit")
+    suspend fun searchChunks(query: String, limit: Int = 50): List<RagChunk>
+
+    @Query("SELECT * FROM rag_chunks WHERE embeddingId = :embeddingId LIMIT 1")
+    suspend fun getByEmbeddingId(embeddingId: Long): RagChunk?
+}
+

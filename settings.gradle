@@ -1,0 +1,9 @@
+rootProject.name = "PeerChat"
+
+include ":app"
+include ":engine"
+include ":rag"
+include ":docs"
+include ":data"
+include ":templates"
+
