@@ -50,6 +50,7 @@ object EngineRuntime {
             _modelMeta.value = meta
         } else {
             _status.value = EngineStatus.Error("Failed to load ${config.modelPath}")
+            _modelMeta.value = null
         }
         success
     }
@@ -61,6 +62,7 @@ object EngineRuntime {
         }
         _status.value = EngineStatus.Idle
         _metrics.value = EngineMetrics.empty()
+        _modelMeta.value = null
     }
 
     fun updateMetrics(metrics: EngineMetrics) {
