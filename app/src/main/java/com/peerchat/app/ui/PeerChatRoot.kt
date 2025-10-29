@@ -45,9 +45,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -90,6 +92,9 @@ fun PeerChatRoot() {
                 }
                 composable(ROUTE_MODELS) {
                     ModelsScreen(onBack = { navController.popBackStack() })
+                }
+                composable(ROUTE_DOCUMENTS) {
+                    DocumentsScreen(onBack = { navController.popBackStack() })
                 }
             }
         }
@@ -380,15 +385,15 @@ private fun HomeScreen(navController: NavHostController) {
                         text = {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 DefaultModels.list.forEach { model ->
-                                    val workState = rememberDownloadState(model)
-                        val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
+                                    val workInfo = rememberDownloadInfo(model)
+                                    val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
                                     ModelCatalogRow(
                                         model = model,
                                         manifest = manifest,
-                                        workState = workState,
-                            onDownload = { ModelDownloadManager.enqueue(context, model) },
-                            onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
-                            onOpenCard = { openUrl(context, model.cardUrl) }
+                                        workInfo = workInfo,
+                                        onDownload = { ModelDownloadManager.enqueue(context, model) },
+                                        onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
+                                        onOpenCard = { openUrl(context, model.cardUrl) }
                                     )
                                     HorizontalDivider()
                                 }
@@ -502,7 +507,8 @@ private fun HomeScreen(navController: NavHostController) {
             onLoadModel = viewModel::loadModelFromInputs,
             onUnloadModel = viewModel::unloadModel,
             onSelectManifest = viewModel::activateManifest,
-            onDeleteManifest = viewModel::deleteManifest
+            onDeleteManifest = viewModel::deleteManifest,
+            onTemplateSelect = viewModel::updateTemplate
         )
     }
 }
@@ -632,18 +638,18 @@ private fun ColumnScope.HomeListRow(
 
 
 @Composable
-private fun rememberDownloadState(model: DefaultModel): WorkInfo.State? {
+private fun rememberDownloadInfo(model: DefaultModel): WorkInfo? {
     val context = LocalContext.current
     val flow = remember(model.id) { ModelDownloadManager.observe(context, model) }
     val infos by flow.collectAsState(initial = emptyList())
-    return infos.firstOrNull()?.state
+    return infos.firstOrNull()
 }
 
 @Composable
 private fun ModelCatalogRow(
     model: DefaultModel,
     manifest: com.peerchat.data.db.ModelManifest?,
-    workState: WorkInfo.State?,
+    workInfo: WorkInfo?,
     onDownload: () -> Unit,
     onActivate: (() -> Unit)?,
     onOpenCard: () -> Unit,
@@ -651,11 +657,19 @@ private fun ModelCatalogRow(
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(model.name, style = MaterialTheme.typography.bodyMedium)
         Text(model.description, style = MaterialTheme.typography.bodySmall)
-        val status = when {
-            workState == WorkInfo.State.RUNNING -> "Downloading…"
-            workState == WorkInfo.State.ENQUEUED -> "Waiting to download"
-            workState == WorkInfo.State.SUCCEEDED -> "Downloaded"
-            workState == WorkInfo.State.FAILED -> "Download failed"
+        val status = when (workInfo?.state) {
+            WorkInfo.State.RUNNING -> {
+                val prog = workInfo.progress
+                val d = prog.getLong(ModelDownloadWorker.KEY_PROGRESS_DOWNLOADED, -1L)
+                val t = prog.getLong(ModelDownloadWorker.KEY_PROGRESS_TOTAL, -1L)
+                if (d >= 0 && t > 0) {
+                    val pct = (d * 100 / t).toInt().coerceIn(0, 100)
+                    "Downloading… $pct%"
+                } else "Downloading…"
+            }
+            WorkInfo.State.ENQUEUED -> "Waiting to download"
+            WorkInfo.State.SUCCEEDED -> "Downloaded"
+            WorkInfo.State.FAILED -> "Download failed"
             else -> null
         }
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -664,7 +678,7 @@ private fun ModelCatalogRow(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onOpenCard) { Text("Model Card") }
-            val isDownloading = workState == WorkInfo.State.RUNNING || workState == WorkInfo.State.ENQUEUED
+            val isDownloading = workInfo?.state == WorkInfo.State.RUNNING || workInfo?.state == WorkInfo.State.ENQUEUED
             TextButton(onClick = onDownload, enabled = !isDownloading) { Text(if (isDownloading) "Downloading…" else "Download") }
             if (manifest != null && onActivate != null) {
                 TextButton(onClick = onActivate) { Text("Activate") }
@@ -691,6 +705,7 @@ private fun SettingsDialog(
     onUnloadModel: () -> Unit,
     onSelectManifest: (com.peerchat.data.db.ModelManifest) -> Unit,
     onDeleteManifest: (com.peerchat.data.db.ModelManifest) -> Unit,
+    onTemplateSelect: (String?) -> Unit = {},
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -729,6 +744,25 @@ private fun SettingsDialog(
                     text = state.maxTokens.toString(),
                     onValueChange = { value -> value.toIntOrNull()?.let(onMaxTokensChange) }
                 )
+                HorizontalDivider()
+                Text("Chat Template", style = MaterialTheme.typography.titleMedium)
+                val detected = state.detectedTemplateId
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SuggestionChip(
+                        onClick = { onTemplateSelect(null) },
+                        label = { Text(if (detected != null) "Auto (${detected})" else "Auto") },
+                        selected = state.selectedTemplateId == null
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    state.templates.forEach { opt ->
+                        androidx.compose.material3.FilterChip(
+                            selected = state.selectedTemplateId == opt.id,
+                            onClick = { onTemplateSelect(opt.id) },
+                            label = { Text(opt.label) }
+                        )
+                    }
+                }
                 HorizontalDivider()
                 Text("Engine", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
@@ -997,12 +1031,12 @@ private fun ModelsScreen(onBack: () -> Unit) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Catalog", style = MaterialTheme.typography.titleMedium)
                     DefaultModels.list.forEach { model ->
-                        val workState = rememberDownloadState(model)
+                        val workInfo = rememberDownloadInfo(model)
                         val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
                         ModelCatalogRow(
                             model = model,
                             manifest = manifest,
-                            workState = workState,
+                            workInfo = workInfo,
                             onDownload = { ModelDownloadManager.enqueue(context, model) },
                             onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
                             onOpenCard = { openUrl(context, model.cardUrl) }
@@ -1025,6 +1059,7 @@ private fun ModelsScreen(onBack: () -> Unit) {
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     TextButton(onClick = { viewModel.activateManifest(manifest) }) { Text("Activate") }
+                                    TextButton(onClick = { viewModel.verifyManifest(manifest) }) { Text("Verify") }
                                     TextButton(onClick = { viewModel.deleteManifest(manifest) }) { Text("Delete") }
                                 }
                             }
@@ -1033,5 +1068,77 @@ private fun ModelsScreen(onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DocumentsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val repository = com.peerchat.app.data.PeerChatRepository.from(context)
+    val documents by repository.observeDocuments().collectAsState(initial = emptyList())
+    val scope = rememberCoroutineScope()
+    var showDeleteConfirm by remember { mutableStateOf<Long?>(null) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Documents") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.Settings, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            if (documents.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No documents indexed yet.", style = MaterialTheme.typography.bodyLarge)
+                }
+            } else {
+                documents.forEach { doc ->
+                    ElevatedCard(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(doc.title, style = MaterialTheme.typography.titleMedium)
+                            Text("${doc.mime} • ${formatBytes(doc.textBytes.size.toLong())}", style = MaterialTheme.typography.bodySmall)
+                            Text("Indexed ${java.text.SimpleDateFormat("MMM d, yyyy", java.util.Locale.getDefault()).format(java.util.Date(doc.createdAt))}", style = MaterialTheme.typography.bodySmall)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        val text = String(doc.textBytes)
+                                        com.peerchat.rag.RagService.indexDocument(repository.database(), doc, text)
+                                    }
+                                }) { Text("Re-index") }
+                                TextButton(onClick = { showDeleteConfirm = doc.id }) { Text("Delete") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    showDeleteConfirm?.let { id ->
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch {
+                        repository.deleteDocument(id)
+                    }
+                    showDeleteConfirm = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirm = null }) { Text("Cancel") } },
+            title = { Text("Delete Document") },
+            text = { Text("Remove this document and all its chunks?") }
+        )
     }
 }

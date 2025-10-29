@@ -140,4 +140,23 @@ class ModelManifestService(private val context: Context) {
     companion object {
         private val DEFAULT_BUFFER_SIZE = max(8 * 1024, 1 shl 15)
     }
+
+    suspend fun verify(manifest: ModelManifest): Boolean = withContext(Dispatchers.IO) {
+        val file = File(manifest.filePath)
+        if (!file.exists()) return@withContext false
+        val checksum = computeSha256(file)
+        val meta = runCatching { JSONObject(manifest.metadataJson) }.getOrNull()?.apply {
+            put("checksum", checksum)
+            put("fileExists", true)
+            put("lastScanned", System.currentTimeMillis())
+        }?.toString() ?: manifest.metadataJson
+        repository.upsert(
+            manifest.copy(
+                sizeBytes = file.length(),
+                checksumSha256 = checksum,
+                metadataJson = meta
+            )
+        )
+        true
+    }
 }

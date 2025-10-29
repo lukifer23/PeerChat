@@ -42,6 +42,8 @@ object EngineNative {
 
     external fun embed(texts: Array<String>): Array<FloatArray>
 
+    external fun countTokens(text: String): Int
+
     external fun metrics(): String
 
     external fun detectModel(modelPath: String): String

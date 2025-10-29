@@ -75,8 +75,14 @@ class PeerChatRepository(private val database: PeerDatabase) {
         database.ragDao().searchChunks(query, limit)
     }
 
+    fun observeDocuments(): Flow<List<Document>> = database.documentDao().observeAll()
+
     suspend fun upsertDocument(document: Document): Long = withContext(Dispatchers.IO) {
         database.documentDao().upsert(document)
+    }
+
+    suspend fun deleteDocument(id: Long) = withContext(Dispatchers.IO) {
+        database.documentDao().delete(id)
     }
 
     suspend fun getManifests(): List<ModelManifest> = withContext(Dispatchers.IO) {

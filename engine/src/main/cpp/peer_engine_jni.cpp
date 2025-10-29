@@ -774,6 +774,21 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
     return outer;
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_peerchat_engine_EngineNative_countTokens(JNIEnv * env, jobject thiz, jstring jText) {
+    (void) thiz;
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.model) {
+        return 0;
+    }
+    const char * text = env->GetStringUTFChars(jText, nullptr);
+    const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    std::vector<llama_token> tokens;
+    bool ok = prepare_prompt_tokens(vocab, text, tokens);
+    env->ReleaseStringUTFChars(jText, text);
+    return ok ? static_cast<jint>(tokens.size()) : 0;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_peerchat_engine_EngineNative_metrics(JNIEnv * env, jobject thiz) {
     (void) thiz;

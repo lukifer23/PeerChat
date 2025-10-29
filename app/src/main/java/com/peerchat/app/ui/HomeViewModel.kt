@@ -540,6 +540,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun verifyManifest(manifest: ModelManifest) {
+        viewModelScope.launch {
+            val ok = manifestService.verify(manifest)
+            _events.emit(HomeEvent.Toast(if (ok) "Checksum verified" else "File missing"))
+        }
+    }
+
     fun importDocument(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(indexing = true) }

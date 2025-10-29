@@ -12,17 +12,18 @@ import kotlin.math.sqrt
 
 object RagService {
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
-        val chunks = simpleTokenChunks(text, maxChunkTokens, overlapTokens)
-        val embeddings = EngineNative.embed(chunks.toTypedArray())
+        val chunks = tokenizerAwareChunks(text, maxChunkTokens, overlapTokens)
+        if (chunks.isEmpty()) return
+        val embeddings = EngineNative.embed(chunks.map { it.text }.toTypedArray())
         for (i in chunks.indices) {
-            val t = chunks[i]
+            val chunk = chunks[i]
             val vec = embeddings[i]
             val norm = vectorNorm(vec)
             val embId = db.embeddingDao().upsert(
                 Embedding(
                     docId = doc.id,
                     chatId = null,
-                    textHash = sha256(t),
+                    textHash = sha256(chunk.text),
                     vector = floatArrayToBytes(vec),
                     dim = vec.size,
                     norm = norm,
@@ -32,10 +33,10 @@ object RagService {
             db.ragDao().insertChunk(
                 RagChunk(
                     docId = doc.id,
-                    start = 0,
-                    end = 0,
-                    text = t,
-                    tokenCount = 0,
+                    start = chunk.start,
+                    end = chunk.end,
+                    text = chunk.text,
+                    tokenCount = chunk.tokenCount,
                     embeddingId = embId
                 )
             )
@@ -72,17 +73,50 @@ object RagService {
     }
 }
 
-private fun simpleTokenChunks(text: String, maxTokens: Int, overlap: Int): List<String> {
-    // naive whitespace tokenization sizing
-    val words = text.split(Regex("\\s+"))
-    if (words.isEmpty()) return emptyList()
-    val out = ArrayList<String>()
-    var i = 0
-    while (i < words.size) {
-        val end = min(words.size, i + maxTokens)
-        out.add(words.subList(i, end).joinToString(" "))
-        i = max(end - overlap, i + 1)
+private data class ChunkInfo(val text: String, val start: Int, val end: Int, val tokenCount: Int)
+
+private fun tokenizerAwareChunks(text: String, maxTokens: Int, overlapTokens: Int): List<ChunkInfo> {
+    if (text.isEmpty()) return emptyList()
+    val out = ArrayList<ChunkInfo>()
+    var pos = 0
+    val chars = text.toCharArray()
+    val totalChars = chars.size
+
+    while (pos < totalChars) {
+        var searchStart = pos
+        var searchEnd = min(totalChars, pos + (maxTokens * 4))
+        var chunkEnd = searchEnd
+
+        while (searchStart < searchEnd) {
+            val mid = (searchStart + searchEnd) / 2
+            val candidate = String(chars, pos, mid - pos)
+            val tokens = runCatching { EngineNative.countTokens(candidate) }.getOrElse { 
+                (candidate.length / 4).coerceAtLeast(1) 
+            }
+            if (tokens <= maxTokens) {
+                chunkEnd = mid
+                searchStart = mid + 1
+            } else {
+                searchEnd = mid - 1
+            }
+        }
+
+        if (chunkEnd <= pos) {
+            chunkEnd = min(totalChars, pos + 100)
+        }
+
+        val chunkText = String(chars, pos, chunkEnd - pos)
+        val actualTokens = runCatching { EngineNative.countTokens(chunkText) }.getOrElse { 
+            (chunkText.length / 4).coerceAtLeast(1) 
+        }
+
+        out.add(ChunkInfo(chunkText, pos, chunkEnd, actualTokens))
+
+        if (chunkEnd >= totalChars) break
+        val backStep = max(overlapTokens * 2, overlapTokens)
+        pos = max(pos + 1, chunkEnd - backStep)
     }
+
     return out
 }
 

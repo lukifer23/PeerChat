@@ -23,7 +23,7 @@ class ModelDownloadWorker(
 
         val modelsDir = File(applicationContext.filesDir, "models").apply { if (!exists()) mkdirs() }
         val destination = File(modelsDir, fileName)
-        val tempFile = File.createTempFile("dl_", "tmp", applicationContext.cacheDir)
+        val tempFile = File(applicationContext.cacheDir, "$fileName.part")
 
         try {
             downloadToFile(url, tempFile)
@@ -31,6 +31,7 @@ class ModelDownloadWorker(
                 tempFile.delete()
                 return@withContext Result.failure()
             }
+            if (destination.exists()) destination.delete()
             tempFile.copyTo(destination, overwrite = true)
             tempFile.delete()
 
@@ -47,28 +48,48 @@ class ModelDownloadWorker(
 
     private fun downloadToFile(urlString: String, outFile: File) {
         val url = URL(urlString)
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 30_000
-            readTimeout = 60_000
-            requestMethod = "GET"
-        }
-        if (connection.responseCode !in 200..299) {
-            connection.disconnect()
-            throw IllegalStateException("HTTP ${connection.responseCode}")
-        }
-        connection.inputStream.use { input ->
-            FileOutputStream(outFile).use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read <= 0) break
-                    if (isStopped) throw InterruptedException("Download cancelled")
-                    output.write(buffer, 0, read)
-                }
-                output.flush()
+        var connection: HttpURLConnection? = null
+        try {
+            val resume = outFile.exists() && outFile.length() > 0
+            val existing = if (resume) outFile.length() else 0L
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 15_000
+                readTimeout = 60_000
+                if (resume) setRequestProperty("Range", "bytes=$existing-")
+                requestMethod = "GET"
             }
+            val code = connection.responseCode
+            if (code !in 200..299 && code != HttpURLConnection.HTTP_PARTIAL) {
+                throw IllegalStateException("HTTP $code")
+            }
+
+            val remainingLength = connection.getHeaderFieldLong("Content-Length", -1L).coerceAtLeast(0L)
+            val totalBytes = if (remainingLength > 0) existing + remainingLength else -1L
+
+            connection.inputStream.use { input ->
+                FileOutputStream(outFile, resume).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var downloaded = existing
+                    var lastReport = System.nanoTime()
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        if (isStopped) throw InterruptedException("Download cancelled")
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        val now = System.nanoTime()
+                        // progress reporting removed for stability
+                        if (totalBytes > 0 && now - lastReport > 200_000_000L) {
+                            lastReport = now
+                        }
+                    }
+                    output.fd.sync()
+                    // final progress suppressed
+                }
+            }
+        } finally {
+            connection?.disconnect()
         }
-        connection.disconnect()
     }
 
     companion object {
@@ -76,5 +97,7 @@ class ModelDownloadWorker(
         const val KEY_FILE_NAME = "file_name"
         const val KEY_IS_DEFAULT = "is_default"
         const val KEY_OUTPUT_PATH = "output_path"
+        const val KEY_PROGRESS_DOWNLOADED = "downloaded"
+        const val KEY_PROGRESS_TOTAL = "total"
     }
 }

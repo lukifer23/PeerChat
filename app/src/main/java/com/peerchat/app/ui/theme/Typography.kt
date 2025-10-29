@@ -2,21 +2,14 @@ package com.peerchat.app.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 // Using system fallback with weight tuning; replace with embedded font files if needed.
-private val DisplayFamily = FontFamily(
-    Font(weight = FontWeight.W600),
-    Font(weight = FontWeight.W400)
-)
+private val DisplayFamily = FontFamily.Default
 
-private val TextFamily = FontFamily(
-    Font(weight = FontWeight.W500),
-    Font(weight = FontWeight.W400)
-)
+private val TextFamily = FontFamily.Default
 
 val PeerTypography = Typography(
     displayLarge = TextStyle(

@@ -55,6 +55,9 @@ interface DocumentDao {
 
     @Query("SELECT * FROM documents ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<Document>>
+
+    @Query("DELETE FROM documents WHERE id = :id")
+    suspend fun delete(id: Long)
 }
 
 @Dao
