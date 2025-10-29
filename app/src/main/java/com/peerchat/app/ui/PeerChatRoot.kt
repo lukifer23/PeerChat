@@ -167,7 +167,8 @@ private fun HomeScreen(navController: NavHostController) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(bodySpacing)
             ) {
                 StatusRow(status = uiState.engineStatus, metrics = uiState.engineMetrics)
