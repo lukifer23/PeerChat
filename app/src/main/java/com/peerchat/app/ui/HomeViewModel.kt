@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.navigation.NavHostController
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.ModelConfigStore
@@ -200,9 +201,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(selectedFolderId = folderId) }
     }
 
-    fun selectChat(chatId: Long) {
+    fun selectChat(chatId: Long, navController: NavHostController) {
         activeChatId.value = chatId
         _uiState.update { it.copy(activeChatId = chatId) }
+        navController.navigate("chat/$chatId")
     }
 
     fun updateSearchQuery(query: String) {

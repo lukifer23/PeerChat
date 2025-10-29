@@ -18,12 +18,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-data class ChatUiState(
-    val chatId: Long,
-    val messages: List<com.peerchat.data.db.Message> = emptyList(),
-    val streaming: Boolean = false,
-)
-
 class ChatViewModel(
     application: Application,
     savedStateHandle: SavedStateHandle,
@@ -34,7 +28,7 @@ class ChatViewModel(
 
     private val chatId: Long = checkNotNull(savedStateHandle.get<String>("chatId")).toLong()
 
-    private val _uiState = MutableStateFlow(ChatUiState(chatId = chatId))
+    private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     init {
