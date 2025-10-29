@@ -104,6 +104,40 @@ fun PeerChatRoot() {
 }
 
 @Composable
+private fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
+    val context = LocalContext.current
+    val application = context.applicationContext as android.app.Application
+    val viewModel: HomeViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
+        factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                return HomeViewModel(application) as T
+            }
+        }
+    )
+    val uiState by viewModel.uiState.collectAsState()
+    LaunchedEffect(chatId) {
+        viewModel.selectChat(chatId)
+    }
+
+    Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("Chat", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = { navController.popBackStack() }) { Text("Back") }
+        }
+        ElevatedCard(Modifier.fillMaxSize()) {
+            ChatScreen(
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                enabled = uiState.engineStatus is EngineRuntime.EngineStatus.Loaded,
+                messages = uiState.messages,
+                onSend = { prompt, onToken, onComplete ->
+                    viewModel.sendPrompt(prompt, onToken) { text, metrics -> onComplete(text, metrics) }
+                }
+            )
+        }
+    }
+}
+
+@Composable
 @Suppress("UNUSED_PARAMETER")
 private fun HomeScreen(navController: NavHostController) {
     val context = LocalContext.current
@@ -263,7 +297,7 @@ private fun HomeScreen(navController: NavHostController) {
                                     HomeListRow(
                                         title = chat.title,
                                         actions = listOf(
-                                            "Open" to { viewModel.selectChat(chat.id) },
+                                            "Open" to { navController.navigate("chat/${chat.id}") },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
@@ -331,7 +365,7 @@ private fun HomeScreen(navController: NavHostController) {
                                         HomeListRow(
                                             title = chat.title,
                                             actions = listOf(
-                                                "Open" to { viewModel.selectChat(chat.id) },
+                                                "Open" to { navController.navigate("chat/${chat.id}") },
                                                 "Rename" to {
                                                     tempName = TextFieldValue(chat.title)
                                                     renameTargetId.value = chat.id
@@ -869,9 +903,7 @@ private fun ChatScreen(
     var current by remember { mutableStateOf("Assistant: ") }
     var metricsState by remember { mutableStateOf<com.peerchat.engine.EngineMetrics?>(null) }
     val clipboard = LocalClipboardManager.current
-    var reasoning by remember { mutableStateOf("") }
-    var showReasoning by remember { mutableStateOf(false) }
-    var inReasoning by remember { mutableStateOf(false) }
+    var showReasoningFor by remember { mutableStateOf<Long?>(null) }
 
     Column(
         modifier = modifier.fillMaxSize(),
@@ -884,22 +916,14 @@ private fun ChatScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(roleLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         MarkdownText(msg.contentMarkdown)
-                        if (msg.role != "user") {
-                            val reasoning = remember(msg.metaJson) {
+                        if (msg.role == "assistant") {
+                            val reasoningText = remember(msg.metaJson) {
                                 runCatching { org.json.JSONObject(msg.metaJson).optString("reasoning") }
                                     .getOrNull().orEmpty()
                             }
-                            if (reasoning.isNotBlank()) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    TextButton(onClick = { showReasoning = true }) { Text("Reasoning") }
-                                }
-                                if (showReasoning) {
-                                    AlertDialog(
-                                        onDismissRequest = { showReasoning = false },
-                                        confirmButton = { TextButton(onClick = { showReasoning = false }) { Text("Close") } },
-                                        title = { Text("Reasoning") },
-                                        text = { Text(reasoning) }
-                                    )
+                            if (reasoningText.isNotBlank()) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    AssistChip(onClick = { showReasoningFor = msg.id }, label = { Text("View Reasoning") })
                                 }
                             }
                         }
@@ -908,17 +932,6 @@ private fun ChatScreen(
                 }
             }
             item {
-                if (reasoning.isNotEmpty()) {
-                    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Reasoning", style = MaterialTheme.typography.titleSmall)
-                            TextButton(onClick = { showReasoning = !showReasoning }) { Text(if (showReasoning) "Hide" else "Show") }
-                        }
-                        if (showReasoning) {
-                            Text(reasoning)
-                        }
-                    }
-                }
                 if (current != "Assistant: ") {
                     Column(Modifier.fillMaxWidth()) {
                         MarkdownText(current)
@@ -966,31 +979,38 @@ private fun ChatScreen(
                     input = androidx.compose.ui.text.input.TextFieldValue("")
                     current = "Assistant: "
                     metricsState = null
-                    reasoning = ""
-                    inReasoning = false
                     streaming = true
                     onSend(prompt, { token ->
-                        val t = token
-                        if (!inReasoning && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
-                            inReasoning = true
-                        }
-                        if (inReasoning) {
-                            reasoning += t
-                        } else {
-                            current += t
-                        }
-                        if (inReasoning && (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>"))) {
-                            inReasoning = false
-                        }
+                        current += token
                     }, { _, metrics ->
                         streaming = false
                         metricsState = metrics
                         current = "Assistant: "
-                        reasoning = ""
-                        inReasoning = false
                     })
                 }
             ) { Text("Send") }
+        }
+    }
+
+    showReasoningFor?.let { msgId ->
+        val msg = messages.firstOrNull { it.id == msgId }
+        val reasoningText = msg?.let {
+            runCatching { org.json.JSONObject(it.metaJson).optString("reasoning") }
+                .getOrNull().orEmpty()
+        }.orEmpty()
+        if (reasoningText.isNotBlank()) {
+            AlertDialog(
+                onDismissRequest = { showReasoningFor = null },
+                confirmButton = { TextButton(onClick = { showReasoningFor = null }) { Text("Close") } },
+                title = { Text("Reasoning") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(reasoningText, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            )
+        } else {
+            showReasoningFor = null
         }
     }
 }

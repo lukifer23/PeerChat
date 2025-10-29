@@ -2,6 +2,8 @@ package com.peerchat.app.engine
 
 import android.content.Context
 import android.net.Uri
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.peerchat.engine.EngineRuntime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -20,30 +22,59 @@ data class StoredEngineConfig(
 
 object ModelConfigStore {
     private const val PREFS = "engine_config"
+    private const val KEY_MODEL_PATH = "modelPath"
+    private const val KEY_THREADS = "threads"
+    private const val KEY_CONTEXT_LENGTH = "contextLength"
+    private const val KEY_GPU_LAYERS = "gpuLayers"
+    private const val KEY_USE_VULKAN = "useVulkan"
+
+    private fun getEncryptedPrefs(context: Context): EncryptedSharedPreferences {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            context,
+            PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        ) as EncryptedSharedPreferences
+    }
 
     fun load(context: Context): StoredEngineConfig? {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val path = prefs.getString("modelPath", null) ?: return null
-        val threads = prefs.getInt("threads", 6)
-        val contextLength = prefs.getInt("contextLength", 4096)
-        val gpuLayers = prefs.getInt("gpuLayers", 20)
-        val useVulkan = prefs.getBoolean("useVulkan", true)
-        return StoredEngineConfig(path, threads, contextLength, gpuLayers, useVulkan)
+        return try {
+            val prefs = getEncryptedPrefs(context)
+            val path = prefs.getString(KEY_MODEL_PATH, null) ?: return null
+            val threads = prefs.getInt(KEY_THREADS, 6)
+            val contextLength = prefs.getInt(KEY_CONTEXT_LENGTH, 4096)
+            val gpuLayers = prefs.getInt(KEY_GPU_LAYERS, 20)
+            val useVulkan = prefs.getBoolean(KEY_USE_VULKAN, true)
+            StoredEngineConfig(path, threads, contextLength, gpuLayers, useVulkan)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     fun save(context: Context, config: StoredEngineConfig) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit()
-            .putString("modelPath", config.modelPath)
-            .putInt("threads", config.threads)
-            .putInt("contextLength", config.contextLength)
-            .putInt("gpuLayers", config.gpuLayers)
-            .putBoolean("useVulkan", config.useVulkan)
-            .apply()
+        try {
+            val prefs = getEncryptedPrefs(context)
+            prefs.edit()
+                .putString(KEY_MODEL_PATH, config.modelPath)
+                .putInt(KEY_THREADS, config.threads)
+                .putInt(KEY_CONTEXT_LENGTH, config.contextLength)
+                .putInt(KEY_GPU_LAYERS, config.gpuLayers)
+                .putBoolean(KEY_USE_VULKAN, config.useVulkan)
+                .apply()
+        } catch (e: Exception) {
+        }
     }
 
     fun clear(context: Context) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+        try {
+            val prefs = getEncryptedPrefs(context)
+            prefs.edit().clear().apply()
+        } catch (e: Exception) {
+        }
     }
 }
 
@@ -61,12 +92,24 @@ object ModelStorage {
             dest = File(modelsDir, candidate)
             suffix++
         }
-        resolver.openInputStream(uri)?.use { input ->
-            dest.outputStream().use { output ->
-                input.copyTo(output)
+        val tempFile = File.createTempFile("import_", ".tmp", context.cacheDir)
+        try {
+            resolver.openInputStream(uri)?.use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: return@withContext null
+            
+            if (dest.exists()) dest.delete()
+            tempFile.renameTo(dest) || run {
+                tempFile.copyTo(dest, overwrite = true)
+                tempFile.delete()
             }
-        } ?: return@withContext null
-        dest.absolutePath
+            dest.absolutePath
+        } catch (e: Exception) {
+            tempFile.delete()
+            null
+        }
     }
 
     private fun resolveDisplayName(context: Context, uri: Uri): String? {

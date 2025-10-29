@@ -1,29 +1,22 @@
 package com.peerchat.app.ui
 
 import android.app.Application
-import android.content.ContentResolver
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.engine.ServiceRegistry
 import com.peerchat.app.engine.EngineStreamEvent
-import com.peerchat.app.engine.ModelConfigStore
-import com.peerchat.app.engine.ModelManifestService
-import com.peerchat.app.engine.ModelStateCache
-import com.peerchat.app.engine.ModelStorage
 import com.peerchat.app.engine.StreamingEngine
 import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.app.engine.PromptComposer
 import com.peerchat.app.util.optFloatOrNull
 import com.peerchat.app.util.optIntOrNull
 import com.peerchat.app.util.optStringOrNull
-import com.peerchat.data.db.Document
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
-import com.peerchat.rag.RagService
 import com.peerchat.templates.TemplateCatalog
+import com.peerchat.app.docs.OcrService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -49,9 +42,12 @@ import java.security.MessageDigest
 @OptIn(FlowPreview::class)
 class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
-    private val repository = PeerChatRepository.from(appContext)
-    private val manifestService = ModelManifestService(appContext)
-    private val modelCache = ModelStateCache(appContext)
+
+    // Services from registry
+    private val modelService = ServiceRegistry.modelService
+    private val documentService = ServiceRegistry.documentService
+    private val chatService = ServiceRegistry.chatService
+    private val searchService = ServiceRegistry.searchService
 
     private val templateOptions = TemplateCatalog.descriptors().map {
         TemplateOption(
@@ -130,11 +126,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     val results = if (trimmed.isEmpty()) {
                         emptyList()
                     } else {
-                        val messages = repository.searchMessages(trimmed, 20)
-                            .map { "Msg: " + it.contentMarkdown }
-                        val chunks = repository.searchChunks(trimmed, 20)
-                            .map { "Doc: " + it.text }
-                        (messages + chunks).take(50)
+                        searchService.search(trimmed, 50)
+                            .map { result ->
+                                when (result.type) {
+                                    com.peerchat.app.engine.SearchService.SearchResultType.MESSAGE ->
+                                        "Msg: ${result.content}"
+                                    com.peerchat.app.engine.SearchService.SearchResultType.DOCUMENT_CHUNK ->
+                                        "Doc: ${result.content}"
+                                }
+                            }
                     }
                     _uiState.update { it.copy(searchQuery = query, searchResults = results) }
                 }
@@ -197,14 +197,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun observeManifests() {
         viewModelScope.launch {
-            manifestService.manifestsFlow().collectLatest { manifests ->
+            modelService.getManifestsFlow().collectLatest { manifests ->
                 val state = _uiState.value
                 val targetPath = state.storedConfig?.modelPath
                     ?: state.modelPath.takeIf { it.isNotBlank() }
                 val activeManifest = targetPath?.let { path ->
                     manifests.firstOrNull { it.filePath == path }
                 }
-                val detectedTemplate = activeManifest?.let { manifestService.detectedTemplateId(it) }
+                val detectedTemplate = activeManifest?.let { modelService.getDetectedTemplateId(it) }
                 _uiState.update {
                     it.copy(
                         manifests = manifests,
@@ -331,55 +331,44 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createChat(name: String) {
         viewModelScope.launch {
-            val trimmed = name.trim().ifEmpty { "New Chat" }
-            val id = repository.createChat(
-                title = trimmed,
+            val result = chatService.createChat(
+                title = name,
                 folderId = selectedFolderId.value,
                 systemPrompt = _uiState.value.sysPrompt,
                 modelId = _uiState.value.storedConfig?.modelPath ?: "default"
             )
-            activeChatId.value = id
-            _uiState.update { it.copy(activeChatId = id) }
-            loadChatSettings(id)
+            if (result.success && result.chatId != null) {
+                activeChatId.value = result.chatId
+                _uiState.update { it.copy(activeChatId = result.chatId) }
+                loadChatSettings(result.chatId)
+            }
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun renameChat(chatId: Long, title: String) {
         viewModelScope.launch {
-            repository.renameChat(chatId, title.trim().ifEmpty { "Untitled" })
+            val result = chatService.renameChat(chatId, title)
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun moveChat(chatId: Long, folderId: Long?) {
         viewModelScope.launch {
-            repository.moveChat(chatId, folderId)
+            val result = chatService.moveChat(chatId, folderId)
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun forkChat(chatId: Long) {
         viewModelScope.launch {
-            val base = repository.getChat(chatId) ?: return@launch
-            val newChatId = repository.createChat(
-                title = base.title + " (copy)",
-                folderId = base.folderId,
-                systemPrompt = base.systemPrompt,
-                modelId = base.modelId
-            )
-            val messages = repository.listMessages(chatId)
-            withContext(Dispatchers.IO) {
-                messages.forEach { message ->
-                    repository.insertMessage(
-                        message.copy(
-                            id = 0,
-                            chatId = newChatId,
-                            createdAt = System.currentTimeMillis()
-                        )
-                    )
-                }
+            val result = chatService.forkChat(chatId)
+            if (result.success && result.chatId != null) {
+                activeChatId.value = result.chatId
+                _uiState.update { it.copy(activeChatId = result.chatId) }
+                loadChatSettings(result.chatId)
             }
-            activeChatId.value = newChatId
-            _uiState.update { it.copy(activeChatId = newChatId) }
-            loadChatSettings(newChatId)
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
@@ -423,7 +412,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             useVulkan = state.useVulkan
         )
         viewModelScope.launch {
-            loadModelInternal(config, showToast = true)
+            _uiState.update { it.copy(importingModel = true) }
+            val result = modelService.loadModel(config)
+            _uiState.update { it.copy(importingModel = false) }
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
@@ -431,10 +423,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(importingModel = true) }
             try {
-                EngineRuntime.unload()
-                EngineRuntime.clearState(true)
-                modelCache.clearAll()
-                ModelConfigStore.clear(appContext)
+                val message = modelService.unloadModel()
                 _uiState.update {
                     it.copy(
                         storedConfig = null,
@@ -445,44 +434,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         detectedTemplateId = null
                     )
                 }
-                _events.emit(HomeEvent.Toast("Model unloaded"))
+                _events.emit(HomeEvent.Toast(message))
             } finally {
                 _uiState.update { it.copy(importingModel = false) }
             }
-        }
-    }
-
-    private suspend fun loadModelInternal(config: StoredEngineConfig, showToast: Boolean) {
-        _uiState.update { it.copy(importingModel = true) }
-        try {
-            EngineRuntime.unload()
-            EngineRuntime.clearState(true)
-            modelCache.clearAll()
-            val loaded = EngineRuntime.load(config.toEngineConfig())
-            if (loaded) {
-                ModelConfigStore.save(appContext, config)
-                manifestService.ensureManifestFor(config.modelPath, EngineRuntime.currentModelMeta())
-                val manifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
-                val detectedTemplateId = manifest?.let { manifestService.detectedTemplateId(it) }
-                _uiState.update {
-                    it.copy(
-                        storedConfig = config,
-                        modelPath = config.modelPath,
-                        threadText = config.threads.toString(),
-                        contextText = config.contextLength.toString(),
-                        gpuText = config.gpuLayers.toString(),
-                        useVulkan = config.useVulkan,
-                        detectedTemplateId = detectedTemplateId
-                    )
-                }
-                if (showToast) _events.emit(HomeEvent.Toast("Model loaded"))
-            } else {
-                ModelConfigStore.clear(appContext)
-                _uiState.update { it.copy(storedConfig = null) }
-                _events.emit(HomeEvent.Toast("Failed to load model"))
-            }
-        } finally {
-            _uiState.update { it.copy(importingModel = false) }
         }
     }
 
@@ -490,29 +445,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(importingModel = true) }
             try {
-                val path = ModelStorage.importModel(appContext, uri)
-                if (!path.isNullOrEmpty()) {
-                    // Record manifest
-                    manifestService.ensureManifestFor(path)
-
-                    // Autoload using current UI inputs (fallback to sane defaults)
-                    val state = _uiState.value
-                    val threads = state.threadText.toIntOrNull() ?: 6
-                    val ctxLen = state.contextText.toIntOrNull() ?: 4096
-                    val gpu = state.gpuText.toIntOrNull() ?: 20
-                    val config = StoredEngineConfig(
-                        modelPath = path,
-                        threads = threads,
-                        contextLength = ctxLen,
-                        gpuLayers = gpu,
-                        useVulkan = state.useVulkan
-                    )
+                val result = modelService.importModel(uri)
+                if (result.success) {
                     // Update path immediately for visibility
-                    _uiState.update { it.copy(modelPath = path) }
-                    // Load model (shows toast on success/failure)
-                    loadModelInternal(config, showToast = true)
+                    result.manifest?.filePath?.let { path ->
+                        _uiState.update { it.copy(modelPath = path) }
+                    }
+                    // Try to load the model
+                    result.manifest?.let { manifest ->
+                        val loadResult = modelService.activateManifest(manifest)
+                        _events.emit(HomeEvent.Toast(loadResult.message))
+                    } ?: _events.emit(HomeEvent.Toast(result.message))
                 } else {
-                    _events.emit(HomeEvent.Toast("Import failed"))
+                    _events.emit(HomeEvent.Toast(result.message))
                 }
             } finally {
                 _uiState.update { it.copy(importingModel = false) }
@@ -522,28 +467,34 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteManifest(manifest: ModelManifest) {
         viewModelScope.launch {
-            manifestService.deleteManifest(manifest, removeFile = true)
+            val message = modelService.deleteManifest(manifest, removeFile = true)
             if (_uiState.value.storedConfig?.modelPath == manifest.filePath) {
-                ModelConfigStore.clear(appContext)
                 _uiState.update { it.copy(storedConfig = null, modelPath = "") }
             }
+            _events.emit(HomeEvent.Toast(message))
         }
     }
 
     fun activateManifest(manifest: ModelManifest) {
-        _uiState.update {
-            it.copy(
-                modelPath = manifest.filePath,
-                contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
-                detectedTemplateId = manifestService.detectedTemplateId(manifest)
-            )
+        viewModelScope.launch {
+            val result = modelService.activateManifest(manifest)
+            if (result.success) {
+                _uiState.update {
+                    it.copy(
+                        modelPath = manifest.filePath,
+                        contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
+                        detectedTemplateId = modelService.getDetectedTemplateId(manifest)
+                    )
+                }
+            }
+            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun verifyManifest(manifest: ModelManifest) {
         viewModelScope.launch {
-            val ok = manifestService.verify(manifest)
-            _events.emit(HomeEvent.Toast(if (ok) "Checksum verified" else "File missing"))
+            val verified = modelService.verifyManifest(manifest)
+            _events.emit(HomeEvent.Toast(if (verified) "Checksum verified" else "File missing"))
         }
     }
 
@@ -551,31 +502,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _uiState.update { it.copy(indexing = true) }
             try {
-                val resolver = appContext.contentResolver
-                val mime = resolver.getType(uri) ?: "application/octet-stream"
-                val name = resolveDisplayName(resolver, uri) ?: "Document"
-                val text = when {
-                    mime == "application/pdf" -> extractPdfText(resolver, uri)
-                    mime.startsWith("text/") -> resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                    mime.startsWith("image/") -> ""
-                    else -> ""
-                }
-                val document = Document(
-                    uri = uri.toString(),
-                    title = name,
-                    hash = sha256(text),
-                    mime = mime,
-                    textBytes = text.toByteArray(),
-                    createdAt = System.currentTimeMillis(),
-                    metaJson = "{}"
-                )
-                val id = repository.upsertDocument(document)
-                RagService.indexDocument(
-                    repository.database(),
-                    document.copy(id = id),
-                    text
-                )
-                _events.emit(HomeEvent.Toast("Document indexed"))
+                val result = documentService.importDocument(uri)
+                _events.emit(HomeEvent.Toast(result.message))
             } finally {
                 _uiState.update { it.copy(indexing = false) }
             }
@@ -687,34 +615,4 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun resolveDisplayName(resolver: ContentResolver, uri: Uri): String? {
-        val projection = arrayOf(OpenableColumns.DISPLAY_NAME)
-        resolver.query(uri, projection, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (index >= 0) {
-                    return cursor.getString(index)
-                }
-            }
-        }
-        return null
-    }
-
-    private fun extractPdfText(resolver: ContentResolver, uri: Uri): String {
-        resolver.openInputStream(uri).use { input ->
-            if (input != null) {
-                com.tom_roush.pdfbox.pdmodel.PDDocument.load(input).use { doc ->
-                    val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
-                    return stripper.getText(doc) ?: ""
-                }
-            }
-        }
-        return ""
-    }
-
-    private fun sha256(value: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val hash = digest.digest(value.toByteArray())
-        return hash.joinToString("") { "%02x".format(it) }
-    }
 }

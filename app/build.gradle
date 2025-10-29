@@ -74,8 +74,12 @@ dependencies {
     implementation "androidx.room:room-ktx:${rootProject.ext.roomVersion}"
     ksp "androidx.room:room-compiler:${rootProject.ext.roomVersion}"
 
-    // PDF & OCR (docs module will wrap, but app includes for now if needed)
+    // PDF & OCR
     implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+    implementation 'com.google.mlkit:text-recognition:16.0.0'
+    
+    // Security
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
 
     // Markdown rendering for Compose with code block support
     implementation 'com.github.jeziellago:compose-markdown:0.4.1'
