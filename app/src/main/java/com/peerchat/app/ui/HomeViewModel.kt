@@ -431,7 +431,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         modelPath = "",
                         threadText = "6",
                         contextText = "4096",
-                        gpuText = "20"
+                        gpuText = "20",
+                        detectedTemplateId = null
                     )
                 }
                 _events.emit(HomeEvent.Toast("Model unloaded"))
