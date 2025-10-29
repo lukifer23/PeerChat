@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -93,6 +92,7 @@ class MainActivity : ComponentActivity() {
                 var isLoadingModel by remember { mutableStateOf(false) }
                 var importingModel by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
+                var showModels by remember { mutableStateOf(false) }
                 var searchQuery by remember { mutableStateOf(TextFieldValue("")) }
                 var searchResults by remember { mutableStateOf(listOf<String>()) }
                 var sysPrompt by remember { mutableStateOf("") }
@@ -234,21 +234,61 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                LaunchedEffect(storedConfig?.modelPath, engineStatus) {
+                    val config = storedConfig ?: return@LaunchedEffect
+                    if (config.modelPath.isBlank()) return@LaunchedEffect
+                    if (engineStatus !is EngineRuntime.EngineStatus.Uninitialized && engineStatus !is EngineRuntime.EngineStatus.Idle) return@LaunchedEffect
+                    val file = File(config.modelPath)
+                    if (!file.exists()) {
+                        storedConfig = null
+                        ModelConfigStore.clear(context)
+                        modelPath = ""
+                        return@LaunchedEffect
+                    }
+                    isLoadingModel = true
+                    val loaded = EngineRuntime.load(config.toEngineConfig())
+                    isLoadingModel = false
+                    if (loaded) {
+                        manifestService.ensureManifestFor(config.modelPath, EngineRuntime.currentModelMeta())
+                        modelCache.clearAll()
+                    } else {
+                        storedConfig = null
+                        ModelConfigStore.clear(context)
+                    }
+                }
+
+                LaunchedEffect(searchQuery.text) {
+                    val q = searchQuery.text.trim()
+                    if (q.isNotEmpty()) {
+                        val msgs = db.messageDao().searchText(q, 20).map { "Msg: " + it.contentMarkdown }
+                        val chunks = db.ragDao().searchChunks(q, 20).map { "Doc: " + it.text }
+                        searchResults = (msgs + chunks).take(50)
+                    } else {
+                        searchResults = emptyList()
+                    }
+                }
+
                 Column(Modifier.fillMaxSize()) {
                     androidx.compose.material3.TopAppBar(title = { Text("PeerChat") }, actions = {
-                        IconButton(onClick = {
-                            val q = searchQuery.text.trim()
-                            if (q.isNotEmpty()) {
-                                lifecycleScope.launch {
-                                    val msgs = db.messageDao().searchText(q, 20).map { "Msg: " + it.contentMarkdown }
-                                    val chunks = db.ragDao().searchChunks(q, 20).map { "Doc: " + it.text }
-                                    searchResults = (msgs + chunks).take(50)
-                                }
-                            } else searchResults = emptyList()
-                        }) { Icon(Icons.Default.Search, contentDescription = "Search") }
-                        IconButton(onClick = { importLauncher.launch(arrayOf("application/pdf", "text/*", "image/*")) }) { Icon(Icons.Default.UploadFile, contentDescription = "Import") }
+                        TextButton(onClick = {
+                            documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
+                        }, enabled = !indexing) {
+                            Text(if (indexing) "Importing…" else "Import Doc")
+                        }
+                        TextButton(onClick = {
+                            modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
+                        }, enabled = !importingModel) {
+                            Text(if (importingModel) "Importing…" else "Import Model")
+                        }
+                        TextButton(onClick = { showModels = true }) { Text("Models") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
                     })
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Engine: ${statusLabel(engineStatus)}", style = MaterialTheme.typography.bodySmall)
+                        manifests.firstOrNull { it.filePath == storedConfig?.modelPath }?.let { manifest ->
+                            Text("Active: ${manifest.name}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                         OutlinedTextField(
                             value = searchQuery,
@@ -312,6 +352,10 @@ class MainActivity : ComponentActivity() {
                             ChatScreen(onSend = { prompt, appendToken, onDone ->
                     lifecycleScope.launch {
                         val chatId = chatIdState.value ?: return@launch
+                        val restored = modelCache.restore(chatId)
+                        if (!restored) {
+                            EngineRuntime.clearState(false)
+                        }
                         db.messageDao().insert(
                             Message(
                                 chatId = chatId,
@@ -325,11 +369,11 @@ class MainActivity : ComponentActivity() {
                                 metaJson = "{}"
                             )
                         )
-                        // RAG: retrieve and build context, then augment prompt
                         val retrieved = RagService.retrieve(db, prompt, topK = 6)
                         val ctx = RagService.buildContext(retrieved)
                         val augmented = if (ctx.isNotBlank()) ctx + "\n\n" + prompt else prompt
 
+                        var success = false
                         StreamingEngine.stream(
                             prompt = augmented,
                             systemPrompt = sysPrompt,
@@ -342,8 +386,16 @@ class MainActivity : ComponentActivity() {
                         ).collectLatest { event ->
                             when (event) {
                                 is EngineStreamEvent.Token -> appendToken(event.text)
-                                is EngineStreamEvent.Terminal -> onDone(event.metrics)
+                                is EngineStreamEvent.Terminal -> {
+                                    success = !event.metrics.isError
+                                    onDone(event.metrics)
+                                }
                             }
+                        }
+                        if (success) {
+                            modelCache.capture(chatId)
+                        } else {
+                            modelCache.clear(chatId)
                         }
                     }
                 }, onFinalize = { finalText, metrics ->
@@ -400,13 +452,162 @@ class MainActivity : ComponentActivity() {
                         }) { Text("Save") } },
                         title = { Text("Settings") },
                         text = {
-                            Column {
-                                OutlinedTextField(value = sysPrompt, onValueChange = { sysPrompt = it }, label = { Text("System Prompt") })
+                            Column(Modifier.fillMaxWidth()) {
+                                Text("Chat Settings", style = MaterialTheme.typography.titleMedium)
                                 Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(value = temperature.toString(), onValueChange = { it.toFloatOrNull()?.let { v -> temperature = v } }, label = { Text("Temperature") })
-                                OutlinedTextField(value = topP.toString(), onValueChange = { it.toFloatOrNull()?.let { v -> topP = v } }, label = { Text("top_p") })
-                                OutlinedTextField(value = topK.toString(), onValueChange = { it.toIntOrNull()?.let { v -> topK = v } }, label = { Text("top_k") })
-                                OutlinedTextField(value = maxTokens.toString(), onValueChange = { it.toIntOrNull()?.let { v -> maxTokens = v } }, label = { Text("Max tokens") })
+                                OutlinedTextField(
+                                    value = sysPrompt,
+                                    onValueChange = { sysPrompt = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("System Prompt") }
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                NumericField("Temperature", temperature.toString(), KeyboardType.Decimal) { value ->
+                                    value.toFloatOrNull()?.let { temperature = it }
+                                }
+                                NumericField("top_p", topP.toString(), KeyboardType.Decimal) { value ->
+                                    value.toFloatOrNull()?.let { topP = it }
+                                }
+                                NumericField("top_k", topK.toString()) { value ->
+                                    if (value.isEmpty()) {
+                                        topK = 0
+                                    } else {
+                                        value.toIntOrNull()?.let { topK = it }
+                                    }
+                                }
+                                NumericField("Max tokens", maxTokens.toString()) { value ->
+                                    if (value.isEmpty()) {
+                                        maxTokens = 0
+                                    } else {
+                                        value.toIntOrNull()?.let { maxTokens = it }
+                                    }
+                                }
+
+                                Spacer(Modifier.height(12.dp))
+                                Divider()
+                                Spacer(Modifier.height(12.dp))
+                                Text("Engine", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.height(8.dp))
+                                StatusRow(engineStatus, engineMetrics)
+                                modelMeta?.takeIf { !it.isNullOrBlank() }?.let {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(it, style = MaterialTheme.typography.bodySmall)
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                OutlinedTextField(
+                                    value = modelPath,
+                                    onValueChange = { modelPath = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Model Path") },
+                                    singleLine = true
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                val threadsVal = threadText.toIntOrNull() ?: return@launch
+                                                val contextVal = contextText.toIntOrNull() ?: return@launch
+                                                val gpuVal = gpuText.toIntOrNull() ?: return@launch
+                                                if (modelPath.isBlank()) return@launch
+                                                isLoadingModel = true
+                                                val success = try {
+                                                    EngineRuntime.unload()
+                                                    EngineRuntime.clearState(true)
+                                                    modelCache.clearAll()
+                                                    val config = com.peerchat.app.engine.StoredEngineConfig(modelPath, threadsVal, contextVal, gpuVal, useVulkan)
+                                                    val loaded = EngineRuntime.load(config.toEngineConfig())
+                                                    if (loaded) {
+                                                        storedConfig = config
+                                                        ModelConfigStore.save(context, config)
+                                                        manifestService.ensureManifestFor(config.modelPath, EngineRuntime.currentModelMeta())
+                                                    }
+                                                    loaded
+                                                } finally {
+                                                    isLoadingModel = false
+                                                }
+                                                if (!success) {
+                                                    storedConfig = null
+                                                    ModelConfigStore.clear(context)
+                                                }
+                                            }
+                                        },
+                                        enabled = !isLoadingModel && modelPath.isNotBlank()
+                                    ) {
+                                        Text(if (isLoadingModel) "Loading…" else "Load Model")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                isLoadingModel = true
+                                                EngineRuntime.unload()
+                                                EngineRuntime.clearState(true)
+                                                modelCache.clearAll()
+                                                storedConfig = null
+                                                ModelConfigStore.clear(context)
+                                                isLoadingModel = false
+                                            }
+                                        },
+                                        enabled = !isLoadingModel && engineStatus is EngineRuntime.EngineStatus.Loaded
+                                    ) {
+                                        Text("Unload")
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                NumericField("Threads", threadText) { value ->
+                                    if (value.isEmpty() || value.toIntOrNull() != null) threadText = value
+                                }
+                                NumericField("Context Length", contextText) { value ->
+                                    if (value.isEmpty() || value.toIntOrNull() != null) contextText = value
+                                }
+                                NumericField("GPU Layers", gpuText) { value ->
+                                    if (value.isEmpty() || value.toIntOrNull() != null) gpuText = value
+                                }
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Use Vulkan")
+                                    Switch(checked = useVulkan, onCheckedChange = { useVulkan = it })
+                                }
+
+                                Spacer(Modifier.height(12.dp))
+                                Divider()
+                                Spacer(Modifier.height(12.dp))
+                                Text("Available Models", style = MaterialTheme.typography.titleMedium)
+                                if (manifests.isEmpty()) {
+                                    Text("No manifests recorded yet.", style = MaterialTheme.typography.bodySmall)
+                                } else {
+                                    LazyColumn(Modifier.heightIn(max = 220.dp)) {
+                                        items(manifests) { manifest ->
+                                            val isActive = manifest.filePath == storedConfig?.modelPath
+                                            val fileExists = File(manifest.filePath).exists()
+                                            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                                Text(manifest.name + if (isActive) " (active)" else "", style = MaterialTheme.typography.bodyMedium)
+                                                Text("${manifest.family} • ${formatBytes(manifest.sizeBytes)}", style = MaterialTheme.typography.bodySmall)
+                                                if (!fileExists) {
+                                                    Text("File missing", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                                }
+                                                Spacer(Modifier.height(4.dp))
+                                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    TextButton(onClick = {
+                                                        modelPath = manifest.filePath
+                                                        if (manifest.contextLength > 0) {
+                                                            contextText = manifest.contextLength.toString()
+                                                        }
+                                                    }) { Text("Activate") }
+                                                    TextButton(onClick = {
+                                                        coroutineScope.launch {
+                                                            manifestService.deleteManifest(manifest, removeFile = true)
+                                                            if (storedConfig?.modelPath == manifest.filePath) {
+                                                                storedConfig = null
+                                                                ModelConfigStore.clear(context)
+                                                                modelPath = ""
+                                                            }
+                                                        }
+                                                    }) { Text("Delete") }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     )
@@ -705,6 +906,48 @@ private fun sha256(s: String): String {
 private fun MainActivity.extractOcrText(uri: android.net.Uri): String = ""
 
 @Composable
+private fun NumericField(
+    label: String,
+    text: String,
+    keyboardType: KeyboardType = KeyboardType.Number,
+    onValueChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = text,
+        onValueChange = onValueChange,
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text(label) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType)
+    )
+    Spacer(Modifier.height(8.dp))
+}
+
+@Composable
+private fun StatusRow(status: EngineRuntime.EngineStatus, metrics: EngineMetrics) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("Status: ${statusLabel(status)}", style = MaterialTheme.typography.bodySmall)
+        Text("TTFS: ${metrics.ttfsMs.toInt()} ms", style = MaterialTheme.typography.bodySmall)
+        Text("TPS: ${String.format(Locale.US, "%.2f", metrics.tps)}", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun statusLabel(status: EngineRuntime.EngineStatus): String = when (status) {
+    EngineRuntime.EngineStatus.Uninitialized -> "Uninitialized"
+    EngineRuntime.EngineStatus.Idle -> "Idle"
+    is EngineRuntime.EngineStatus.Loading -> "Loading"
+    is EngineRuntime.EngineStatus.Loaded -> "Loaded"
+    is EngineRuntime.EngineStatus.Error -> "Error"
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0) return "0 B"
+    val units = arrayOf("B", "KB", "MB", "GB", "TB")
+    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+    return "${String.format(Locale.US, "%.2f", bytes / Math.pow(1024.0, digitGroups.toDouble()))} ${units[digitGroups]}"
+}
+
+@Composable
 private fun ModelsDialog(
     onDismiss: () -> Unit,
     onDownload: (String, String) -> Unit,
@@ -748,16 +991,4 @@ private fun ModelsDialog(
             }
         }
     )
-}
-
-private suspend fun downloadToModels(context: android.content.Context, name: String, url: String): String? = withContext(kotlinx.coroutines.Dispatchers.IO) {
-    return@withContext try {
-        val modelsDir = java.io.File(context.filesDir, "models").apply { if (!exists()) mkdirs() }
-        val fileName = url.substringAfterLast('/')
-        val dest = java.io.File(modelsDir, fileName)
-        java.net.URL(url).openStream().use { input ->
-            java.io.FileOutputStream(dest).use { output -> input.copyTo(output) }
-        }
-        dest.absolutePath
-    } catch (_: Throwable) { null }
 }

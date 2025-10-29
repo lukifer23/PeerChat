@@ -29,9 +29,9 @@
 - Add Vulkan capability probing and graceful fallback toggles surfaced to model settings.
 
 ### 2. Model Lifecycle & Storage (in progress)
-- Introduce `ModelManifest` schema persisted via Room/JSON for default and user imports (done).
-- Surface local discovery, metadata display, and selection from settings dialog (done) with Vulkan/thread tuning.
-- Next: integrate checksum verification, manifest-driven presets, and download workflow with WorkManager.
+- `ModelManifest` schema + Room migration in place; manifests auto-register imported/sideloaded GGUF files.
+- Settings dialog now lists manifests, computes SHA-256, allows activation/removal, and exposes runtime configuration controls.
+- Next: add checksum validation UI, predefined presets, and WorkManager-based downloads with integrity enforcement.
 
 ### 3. Data Persistence & Sync
 - Room migration v1→v2 live (manifests table); need schema validation tests in CI.
@@ -121,6 +121,6 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Build manifest-driven model catalog UI: surface stored manifests, default presets, selection, and deletion with checksum validation (Workstream 2).
-2. Implement download pipeline (WorkManager + integrity verification) and metadata enrichment per manifest (Workstream 2/6).
+1. Implement WorkManager-based model downloads with checksum enforcement and progress UI (Workstream 2/6).
+2. Add manifest presets + template detection from GGUF metadata, surfacing recommended configs (Workstream 2).
 3. Begin Navigation Compose refactor with ViewModel-backed state to host forthcoming model manager and documents screens (Workstream 5).

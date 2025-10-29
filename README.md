@@ -68,9 +68,9 @@ cd engine
 
 PeerChat supports GGUF format models with Q4_K_M quantization recommended for optimal performance. Default models are documented in `defaultmodels.md`.
 
-Place GGUF models in the app's private directory (e.g. `Android/data/<pkg>/files/models/`) or import via the in-app model settings dialog, which records the file in the manifest store for reuse.
+Place GGUF models in the app's private directory (e.g. `Android/data/<pkg>/files/models/`) or import via the in-app model settings dialog, which records the file in the manifest store for reuse. See [`docs/howto-models.md`](docs/howto-models.md) for detailed instructions.
 
-Each imported model is tracked with a manifest entry including path, size, family, and optional checksum metadata. The roadmap includes manifest-driven downloads and integrity verification.
+Each imported model is tracked with a manifest entry including path, size, family, and SHA-256 checksum. The roadmap includes manifest-driven downloads and integrity verification.
 
 ## RAG Pipeline
 
