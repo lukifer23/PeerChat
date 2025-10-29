@@ -660,8 +660,8 @@ private fun ModelCatalogRow(
         val status = when (workInfo?.state) {
             WorkInfo.State.RUNNING -> {
                 val prog = workInfo.progress
-                val d = prog.getLong(ModelDownloadWorker.KEY_PROGRESS_DOWNLOADED, -1L)
-                val t = prog.getLong(ModelDownloadWorker.KEY_PROGRESS_TOTAL, -1L)
+                val d = prog.getLong("downloaded", -1L)
+                val t = prog.getLong("total", -1L)
                 if (d >= 0 && t > 0) {
                     val pct = (d * 100 / t).toInt().coerceIn(0, 100)
                     "Downloading… $pct%"
@@ -750,14 +750,12 @@ private fun SettingsDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SuggestionChip(
                         onClick = { onTemplateSelect(null) },
-                        label = { Text(if (detected != null) "Auto (${detected})" else "Auto") },
-                        selected = state.selectedTemplateId == null
+                        label = { Text(if (detected != null) "Auto (${detected})" else "Auto") }
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     state.templates.forEach { opt ->
-                        androidx.compose.material3.FilterChip(
-                            selected = state.selectedTemplateId == opt.id,
+                        SuggestionChip(
                             onClick = { onTemplateSelect(opt.id) },
                             label = { Text(opt.label) }
                         )

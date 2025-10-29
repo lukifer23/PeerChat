@@ -44,18 +44,43 @@ object RagService {
     }
 
     suspend fun retrieve(db: PeerDatabase, query: String, topK: Int = 6): List<RagChunk> {
+        return retrieveHybrid(db, query, topK)
+    }
+
+    suspend fun retrieveHybrid(
+        db: PeerDatabase,
+        query: String,
+        topK: Int = 6,
+        alphaSemantic: Float = 0.7f,
+        alphaLexical: Float = 0.3f,
+    ): List<RagChunk> {
         val qv = EngineNative.embed(arrayOf(query)).firstOrNull() ?: return emptyList()
-        val all = db.embeddingDao().listAll() // consider paging later
-        val scored = all.mapNotNull { emb ->
-            if (emb.dim <= 0 || emb.vector.isEmpty()) return@mapNotNull null
+        val all = db.embeddingDao().listAll()
+        val semanticScores = HashMap<Long, Float>()
+        for (emb in all) {
+            if (emb.dim <= 0 || emb.vector.isEmpty()) continue
             val v = bytesToFloatArray(emb.vector)
             val s = cosine(qv, v, emb.norm)
-            Pair(emb, s)
-        }.sortedByDescending { it.second }
-        val chosen = scored.take(topK)
+            semanticScores[emb.id] = s
+        }
+        val lexical = db.ragDao().searchChunks(query, limit = topK * 4)
+        val lexicalScores = HashMap<Long, Float>()
+        for ((rank, ch) in lexical.withIndex()) {
+            lexicalScores[ch.embeddingId ?: -1L] = ((lexical.size - rank).toFloat() / lexical.size.toFloat())
+        }
+        val fused = ArrayList<Pair<Long, Float>>()
+        val ids = HashSet<Long>()
+        ids.addAll(semanticScores.keys)
+        ids.addAll(lexicalScores.keys)
+        for (id in ids) {
+            val s = (semanticScores[id] ?: 0f) * alphaSemantic + (lexicalScores[id] ?: 0f) * alphaLexical
+            fused.add(id to s)
+        }
+        fused.sortByDescending { it.second }
+        val chosen = fused.take(topK)
         val out = ArrayList<RagChunk>()
-        for ((e, _) in chosen) {
-            val ch = db.ragDao().getByEmbeddingId(e.id)
+        for ((embId, _) in chosen) {
+            val ch = if (embId > 0) db.ragDao().getByEmbeddingId(embId) else null
             if (ch != null) out.add(ch)
         }
         return out

@@ -609,7 +609,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
 
-            val retrieved = RagService.retrieve(repository.database(), prompt, topK = 6)
+            val retrieved = RagService.retrieveHybrid(repository.database(), prompt, topK = 6)
             val ctx = RagService.buildContext(retrieved)
             val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
             val composition = PromptComposer.compose(
