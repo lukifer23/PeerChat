@@ -68,8 +68,7 @@ class ModelService(
 
                 val finalManifest = updatedManifest ?: manifest
                 if (finalManifest != null) {
-                    val result: OperationResult<ModelManifest> = OperationResult.Success(finalManifest, "Model loaded successfully")
-                result
+                    OperationResult.Success(finalManifest, "Model loaded successfully")
                 } else {
                     OperationResult.Failure("Model loaded but manifest not found")
                 }

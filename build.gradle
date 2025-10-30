@@ -23,3 +23,8 @@ allprojects {
     }
 }
 
+// Build caching optimization
+task cleanBuildCache(type: Delete) {
+    delete rootProject.buildDir
+}
+

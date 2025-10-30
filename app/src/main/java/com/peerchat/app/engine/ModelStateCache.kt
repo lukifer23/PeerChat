@@ -139,8 +139,21 @@ class ModelStateCache(private val context: Context) {
         // Update access time for LRU
         accessTimes[chatId] = accessCounter.incrementAndGet()
 
-        val bytes = decompress(compressedBytes)
-        EngineRuntime.restoreState(bytes)
+        val bytes = try {
+            decompress(compressedBytes)
+        } catch (e: Exception) {
+            // If decompression fails, try uncompressed data
+            compressedBytes
+        }
+
+        try {
+            EngineRuntime.restoreState(bytes)
+        } catch (e: Exception) {
+            // If restore fails, clean up corrupted cache file
+            runCatching { file.delete() }
+            accessTimes.remove(chatId)
+            false
+        }
     }
 
     suspend fun capture(chatId: Long) = withContext(Dispatchers.IO) {

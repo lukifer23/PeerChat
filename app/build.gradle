@@ -25,10 +25,26 @@ android {
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            shrinkResources true
+            // Build optimization flags
+            buildConfigField "boolean", "BUILD_OPTIMIZED", "true"
         }
         debug {
             minifyEnabled false
+            shrinkResources false
+            // Enable build optimizations even in debug for faster development
+            buildConfigField "boolean", "BUILD_OPTIMIZED", "true"
         }
+    }
+
+    // Dexing optimization
+    dexOptions {
+        // Enable incremental dexing
+        incremental true
+        // Pre-dex libraries in parallel
+        preDexLibraries true
+        // Maximum number of indexed dex files
+        maxProcessCount 4
     }
 
     buildFeatures {
@@ -48,8 +64,15 @@ android {
 
     kotlinOptions {
         jvmTarget = '17'
+        // Kotlin compiler optimizations
         freeCompilerArgs += [
                 '-Xjvm-default=all',
+                // Enable incremental compilation
+                '-Xincremental=true',
+                // Enable experimental features for performance
+                '-opt-in=kotlin.RequiresOptIn',
+                // Enable inline functions optimization
+                '-Xinline-classes',
         ]
     }
 }

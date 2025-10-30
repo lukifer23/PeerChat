@@ -59,7 +59,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     // Memoization cache for expensive operations
     private val memoizationCache = mutableMapOf<String, Pair<Long, Any>>()
-    private const val MEMOIZATION_TTL = 30000L // 30 seconds
+    private val MEMOIZATION_TTL = 30000L // 30 seconds
 
     // Memoization helper
     private inline fun <T> memoize(key: String, block: () -> T): T {
@@ -72,7 +72,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val result = block()
-        memoizationCache[key] = currentTime to result
+        memoizationCache[key] = Pair(currentTime, result)
 
         // Clean up old entries periodically
         if (memoizationCache.size > 100) {
@@ -103,6 +103,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val activeChatId = MutableStateFlow<Long?>(null)
     private val searchQuery = MutableStateFlow("")
     private var searchJob: kotlinx.coroutines.Job? = null
+
+    // Race condition prevention - only one send operation at a time per chat
+    private val activeSendJobs = mutableMapOf<Long, kotlinx.coroutines.Job>()
 
     init {
         observeFolders()
@@ -601,105 +604,164 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         onComplete: (String, EngineMetrics) -> Unit
     ) {
         val chatId = activeChatId.value ?: return
-        viewModelScope.launch {
-            val restored = modelCache.restore(chatId)
-            if (!restored) {
-                EngineRuntime.clearState(false)
-            }
-            val state = _uiState.value
-            val history = repository.listMessages(chatId)
-            repository.insertMessage(
-                com.peerchat.data.db.Message(
-                    chatId = chatId,
-                    role = "user",
-                    contentMarkdown = prompt,
-                    tokens = 0,
-                    ttfsMs = 0,
-                    tps = 0f,
-                    contextUsedPct = 0f,
-                    createdAt = System.currentTimeMillis(),
-                    metaJson = "{}"
-                )
-            )
 
-            val retrieved = RagService.retrieveHybrid(repository.database(), prompt, topK = 6)
-            val ctx = RagService.buildContext(retrieved)
-            val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
-            val composition = memoize("prompt_composition_${chatId}_${state.sysPrompt.hashCode()}_${history.size}_${augmented.hashCode()}") {
-                PromptComposer.compose(
-                    PromptComposer.Inputs(
-                        systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
-                        history = history,
-                        nextUserContent = augmented,
-                        selectedTemplateId = state.selectedTemplateId,
-                        detectedTemplateId = state.detectedTemplateId
+        // Prevent race conditions - only one send operation per chat at a time
+        val existingJob = activeSendJobs[chatId]
+        if (existingJob?.isActive == true) {
+            _events.emit(HomeEvent.Toast("Please wait for the current response to complete"))
+            return
+        }
+
+        val job = viewModelScope.launch {
+            activeSendJobs[chatId] = this
+            try {
+                val restored = runCatching { modelCache.restore(chatId) }.getOrDefault(false)
+                if (!restored) {
+                    runCatching { EngineRuntime.clearState(false) }
+                }
+
+                val state = _uiState.value
+                val history = runCatching { repository.listMessages(chatId) }.getOrDefault(emptyList())
+
+                // Insert user message with error recovery
+                runCatching {
+                    repository.insertMessage(
+                        com.peerchat.data.db.Message(
+                            chatId = chatId,
+                            role = "user",
+                            contentMarkdown = prompt,
+                            tokens = 0,
+                            ttfsMs = 0,
+                            tps = 0f,
+                            contextUsedPct = 0f,
+                            createdAt = System.currentTimeMillis(),
+                            metaJson = "{}"
+                        )
                     )
-                )
-            }
+                }.onFailure { e ->
+                    _events.emit(HomeEvent.Toast("Failed to save message: ${e.message}"))
+                    return@launch
+                }
 
-            val builder = StringBuilder()
-            val reasoningBuilder = StringBuilder()
-            var inReasoningRegion = false
-            var success = false
-            StreamingEngine.stream(
-                prompt = composition.prompt.text,
-                systemPrompt = null,
-                template = composition.template.id,
-                temperature = state.temperature,
-                topP = state.topP,
-                topK = state.topK,
-                maxTokens = state.maxTokens,
-                stop = composition.prompt.stopSequences.toTypedArray()
-            ).collect { event ->
-                when (event) {
-                    is EngineStreamEvent.Token -> {
-                        val t = event.text
-                        // Detect reasoning regions
-                        if (!inReasoningRegion && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
-                            inReasoningRegion = true
-                        }
-                        if (inReasoningRegion) {
-                            reasoningBuilder.append(t)
-                            if (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>")) {
-                                inReasoningRegion = false
-                            }
-                        } else {
-                            builder.append(t)
-                            onToken(t)
-                        }
-                    }
-                    is EngineStreamEvent.Terminal -> {
-                        success = !event.metrics.isError
-                        val finalText = builder.toString()
-                        val reasoningText = reasoningBuilder.toString()
-                        onComplete(finalText, event.metrics)
-                        val meta = runCatching { JSONObject(event.metrics.rawJson) }.getOrElse { JSONObject() }
-                        meta.put("templateId", composition.template.id)
-                        if (reasoningText.isNotBlank()) {
-                            meta.put("reasoning", reasoningText)
-                        }
-                        repository.insertMessage(
-                            com.peerchat.data.db.Message(
-                                chatId = chatId,
-                                role = "assistant",
-                                contentMarkdown = finalText,
-                                tokens = 0,
-                                ttfsMs = event.metrics.ttfsMs.toLong(),
-                                tps = event.metrics.tps.toFloat(),
-                                contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
-                                createdAt = System.currentTimeMillis(),
-                                metaJson = meta.toString()
+                // RAG retrieval with error recovery
+                val retrieved = runCatching {
+                    RagService.retrieveHybrid(repository.database(), prompt, topK = 6)
+                }.getOrDefault(emptyList())
+
+                val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
+                val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
+
+                val composition = memoize("prompt_composition_${chatId}_${state.sysPrompt.hashCode()}_${history.size}_${augmented.hashCode()}") {
+                    runCatching {
+                        PromptComposer.compose(
+                            PromptComposer.Inputs(
+                                systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
+                                history = history,
+                                nextUserContent = augmented,
+                                selectedTemplateId = state.selectedTemplateId,
+                                detectedTemplateId = state.detectedTemplateId
                             )
                         )
-                        if (success) {
-                            modelCache.capture(chatId)
-                        } else {
-                            modelCache.clear(chatId)
+                    }.getOrNull()
+                }
+
+                if (composition == null) {
+                    _events.emit(HomeEvent.Toast("Failed to compose prompt"))
+                    return@launch
+                }
+
+                val builder = StringBuilder()
+                val reasoningBuilder = StringBuilder()
+                var inReasoningRegion = false
+                var success = false
+
+                runCatching {
+                    StreamingEngine.stream(
+                        prompt = composition.prompt.text,
+                        systemPrompt = null,
+                        template = composition.template.id,
+                        temperature = state.temperature,
+                        topP = state.topP,
+                        topK = state.topK,
+                        maxTokens = state.maxTokens,
+                        stop = composition.prompt.stopSequences.toTypedArray()
+                    ).collect { event ->
+                        when (event) {
+                            is EngineStreamEvent.Token -> {
+                                val t = event.text
+                                // Detect reasoning regions
+                                if (!inReasoningRegion && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
+                                    inReasoningRegion = true
+                                }
+                                if (inReasoningRegion) {
+                                    reasoningBuilder.append(t)
+                                    if (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>")) {
+                                        inReasoningRegion = false
+                                    }
+                                } else {
+                                    builder.append(t)
+                                    onToken(t)
+                                }
+                            }
+                            is EngineStreamEvent.Terminal -> {
+                                success = !event.metrics.isError
+                                val finalText = builder.toString()
+                                val reasoningText = reasoningBuilder.toString()
+                                onComplete(finalText, event.metrics)
+
+                                // Save assistant message with error recovery
+                                runCatching {
+                                    val meta = runCatching { JSONObject(event.metrics.rawJson) }.getOrElse { JSONObject() }
+                                    meta.put("templateId", composition.template.id)
+                                    if (reasoningText.isNotBlank()) {
+                                        meta.put("reasoning", reasoningText)
+                                    }
+                                    repository.insertMessage(
+                                        com.peerchat.data.db.Message(
+                                            chatId = chatId,
+                                            role = "assistant",
+                                            contentMarkdown = finalText,
+                                            tokens = 0,
+                                            ttfsMs = event.metrics.ttfsMs.toLong(),
+                                            tps = event.metrics.tps.toFloat(),
+                                            contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
+                                            createdAt = System.currentTimeMillis(),
+                                            metaJson = meta.toString()
+                                        )
+                                    )
+                                }.onFailure { e ->
+                                    _events.emit(HomeEvent.Toast("Failed to save response: ${e.message}"))
+                                }
+
+                                // Cache management with error recovery
+                                runCatching {
+                                    if (success) {
+                                        modelCache.capture(chatId)
+                                    } else {
+                                        modelCache.clear(chatId)
+                                    }
+                                }
+                            }
                         }
                     }
+                }.onFailure { e ->
+                    _events.emit(HomeEvent.Toast("Generation failed: ${e.message}"))
+                    // Clear cache on error
+                    runCatching { modelCache.clear(chatId) }
                 }
+
+            } catch (e: Exception) {
+                _events.emit(HomeEvent.Toast("Unexpected error: ${e.message}"))
+                // Clear cache on critical error
+                runCatching { modelCache.clear(chatId) }
+            } finally {
+                // Clean up active job reference
+                activeSendJobs.remove(chatId)
             }
         }
+
+        // Store the job reference (outside the launch block)
+        activeSendJobs[chatId] = job
     }
 
     fun showNewChatDialog() {
@@ -730,4 +792,15 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { it.copy(dialogState = DialogState.None) }
     }
 
+    // Memory leak prevention - cleanup when ViewModel is destroyed
+    override fun onCleared() {
+        super.onCleared()
+        // Cancel all active send jobs
+        activeSendJobs.values.forEach { it.cancel() }
+        activeSendJobs.clear()
+        // Cancel search job if active
+        searchJob?.cancel()
+        // Clear memoization cache
+        memoizationCache.clear()
+    }
 }
