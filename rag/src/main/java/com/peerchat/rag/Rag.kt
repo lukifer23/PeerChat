@@ -14,43 +14,44 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
-object RagService {
-    // Tokenizer cache for performance optimization
-    private val tokenCountCache = ConcurrentHashMap<String, Int>()
-    private val cacheLock = ReentrantReadWriteLock()
-    private const val MAX_CACHE_SIZE = 10000
+// Tokenizer cache for performance optimization
+private val tokenCountCache = ConcurrentHashMap<String, Int>()
+private val cacheLock = ReentrantReadWriteLock()
+private const val MAX_CACHE_SIZE = 10000
 
-    // Clear cache periodically to prevent memory bloat
-    private fun evictCacheIfNeeded() {
-        if (tokenCountCache.size > MAX_CACHE_SIZE) {
-            cacheLock.write {
-                // Keep only the most recent half to maintain some locality
-                val entries = tokenCountCache.entries.take(MAX_CACHE_SIZE / 2)
-                tokenCountCache.clear()
-                tokenCountCache.putAll(entries)
-            }
-        }
-    }
-
-    // Cached token counting with fallback
-    private fun countTokensCached(text: String): Int {
-        val cacheKey = sha256(text).take(16) // Use hash prefix as key
-
-        cacheLock.read {
-            tokenCountCache[cacheKey]?.let { return it }
-        }
-
-        val count = runCatching { EngineNative.countTokens(text) }.getOrElse {
-            (text.length / 4).coerceAtLeast(1)
-        }
-
+// Clear cache periodically to prevent memory bloat
+private fun evictCacheIfNeeded() {
+    if (tokenCountCache.size > MAX_CACHE_SIZE) {
         cacheLock.write {
-            tokenCountCache[cacheKey] = count
+            // Simple eviction: clear half the cache
+            val entriesToKeep = tokenCountCache.entries.take(MAX_CACHE_SIZE / 2)
+            tokenCountCache.clear()
+            entriesToKeep.forEach { tokenCountCache[it.key] = it.value }
         }
-
-        evictCacheIfNeeded()
-        return count
     }
+}
+
+// Cached token counting with fallback
+private fun countTokensCached(text: String): Int {
+    val cacheKey = sha256(text).take(16) // Use hash prefix as key
+
+    cacheLock.read {
+        tokenCountCache[cacheKey]?.let { return it }
+    }
+
+    val count = runCatching { EngineNative.countTokens(text) }.getOrElse {
+        (text.length / 4).coerceAtLeast(1)
+    }
+
+    cacheLock.write {
+        tokenCountCache[cacheKey] = count
+    }
+
+    evictCacheIfNeeded()
+    return count
+}
+
+object RagService {
 
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
         val chunks = optimizedTokenizerChunks(text, maxChunkTokens, overlapTokens)

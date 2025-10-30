@@ -57,12 +57,40 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     // Cache model KV state per chat to enable fast context restore
     private val modelCache = ModelStateCache(appContext)
 
-    private val templateOptions = TemplateCatalog.descriptors().map {
-        TemplateOption(
-            id = it.id,
-            label = it.displayName,
-            stopSequences = it.stopSequences
-        )
+    // Memoization cache for expensive operations
+    private val memoizationCache = mutableMapOf<String, Pair<Long, Any>>()
+    private const val MEMOIZATION_TTL = 30000L // 30 seconds
+
+    // Memoization helper
+    private inline fun <T> memoize(key: String, block: () -> T): T {
+        val currentTime = System.currentTimeMillis()
+        val cached = memoizationCache[key]
+
+        if (cached != null && (currentTime - cached.first) < MEMOIZATION_TTL) {
+            @Suppress("UNCHECKED_CAST")
+            return cached.second as T
+        }
+
+        val result = block()
+        memoizationCache[key] = currentTime to result
+
+        // Clean up old entries periodically
+        if (memoizationCache.size > 100) {
+            val cutoff = currentTime - MEMOIZATION_TTL
+            memoizationCache.entries.removeIf { it.value.first < cutoff }
+        }
+
+        return result
+    }
+
+    private val templateOptions = memoize("template_options") {
+        TemplateCatalog.descriptors().map {
+            TemplateOption(
+                id = it.id,
+                label = it.displayName,
+                stopSequences = it.stopSequences
+            )
+        }
     }
 
     private val _uiState = MutableStateFlow(HomeUiState(templates = templateOptions))
@@ -597,15 +625,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             val retrieved = RagService.retrieveHybrid(repository.database(), prompt, topK = 6)
             val ctx = RagService.buildContext(retrieved)
             val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
-            val composition = PromptComposer.compose(
-                PromptComposer.Inputs(
-                    systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
-                    history = history,
-                    nextUserContent = augmented,
-                    selectedTemplateId = state.selectedTemplateId,
-                    detectedTemplateId = state.detectedTemplateId
+            val composition = memoize("prompt_composition_${chatId}_${state.sysPrompt.hashCode()}_${history.size}_${augmented.hashCode()}") {
+                PromptComposer.compose(
+                    PromptComposer.Inputs(
+                        systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
+                        history = history,
+                        nextUserContent = augmented,
+                        selectedTemplateId = state.selectedTemplateId,
+                        detectedTemplateId = state.detectedTemplateId
+                    )
                 )
-            )
+            }
 
             val builder = StringBuilder()
             val reasoningBuilder = StringBuilder()
