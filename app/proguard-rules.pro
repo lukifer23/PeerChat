@@ -10,6 +10,10 @@
 -keep class com.peerchat.data.db.** { *; }
 -keep class com.peerchat.app.engine.** { *; }
 
+# JNI / Engine keep rules
+-keep class com.peerchat.engine.EngineNative { *; }
+-keep class com.peerchat.engine.TokenCallback { *; }
+
 # Compose optimizations
 -dontwarn androidx.compose.**
 -keep class androidx.compose.** { *; }

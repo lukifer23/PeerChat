@@ -53,6 +53,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     // Services from registry
     private val modelService = ServiceRegistry.modelService
+    private val modelRepository = ServiceRegistry.modelRepository
     private val documentService = ServiceRegistry.documentService
     private val searchService = ServiceRegistry.searchService
 
@@ -642,10 +643,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val job = viewModelScope.launch {
             activeSendJobs[chatId] = this as kotlinx.coroutines.Job
             try {
-                val restored = runCatching { modelCache.restore(chatId) }.getOrDefault(false)
-                if (!restored) {
-                    runCatching { EngineRuntime.clearState(false) }
-                }
+                // KV state restore handled by repository during streaming
 
                 val state = _uiState.value
                 val history = runCatching { repository.listMessages(chatId) }.getOrDefault(emptyList())
@@ -672,7 +670,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
                 // RAG retrieval with error recovery
                 val retrieved = runCatching {
-                    RagService.retrieveHybrid(repository.database(), prompt, topK = 6)
+                    ServiceRegistry.ragRetriever.retrieve(repository.database(), prompt, topK = 6)
                 }.getOrDefault(emptyList())
 
                 val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
@@ -703,7 +701,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 var success = false
 
                 runCatching {
-                    StreamingEngine.stream(
+                    modelRepository.streamWithCache(
+                        chatId = chatId,
                         prompt = composition.prompt.text,
                         systemPrompt = null,
                         template = composition.template.id,
@@ -760,14 +759,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                                     _events.emit(HomeEvent.Toast("Failed to save response: ${e.message}"))
                                 }
 
-                                // Cache management with error recovery
-                                runCatching {
-                                    if (success) {
-                                        modelCache.capture(chatId)
-                                    } else {
-                                        modelCache.clear(chatId)
-                                    }
-                                }
+                                // KV cache handled by repository
                             }
                         }
                     }

@@ -61,11 +61,10 @@ fun SettingsDialog(
     onDeleteManifest: (ModelManifest) -> Unit,
     onTemplateSelect: (String?) -> Unit = {},
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Settings") },
-        text = {
+    AppDialog(
+        title = "Settings",
+        onDismiss = onDismiss,
+        content = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("Chat Settings", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
@@ -184,11 +183,10 @@ fun ModelsDialog(
 ) {
     val context = LocalContext.current
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Models") },
-        text = {
+    AppDialog(
+        title = "Models",
+        onDismiss = onDismiss,
+        content = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 DefaultModels.list.forEach { model ->
                     val workInfo = rememberDownloadInfo(model)
@@ -216,17 +214,13 @@ fun RenameChatDialog(
 ) {
     var title by remember { mutableStateOf(TextFieldValue(currentTitle)) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
-                onConfirm(title.text)
-                onDismiss()
-            }) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("Rename Chat") },
-        text = { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Chat Title") }) }
+    AppDialog(
+        title = "Rename Chat",
+        onDismiss = onDismiss,
+        confirmText = "Save",
+        onConfirm = { onConfirm(title.text) },
+        dismissText = "Cancel",
+        content = { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Chat Title") }) }
     )
 }
 
@@ -236,11 +230,10 @@ fun MoveChatDialog(
     onMoveToFolder: (Long?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Move Chat to Folder") },
-        text = {
+    AppDialog(
+        title = "Move Chat to Folder",
+        onDismiss = onDismiss,
+        content = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = {
                     onMoveToFolder(null)
@@ -264,17 +257,13 @@ fun ForkChatDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
-                onConfirm()
-                onDismiss()
-            }) { Text("Fork") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("Fork Chat") },
-        text = { Text("Create a duplicate conversation including existing messages?") }
+    AppDialog(
+        title = "Fork Chat",
+        onDismiss = onDismiss,
+        confirmText = "Fork",
+        onConfirm = onConfirm,
+        dismissText = "Cancel",
+        content = { Text("Create a duplicate conversation including existing messages?") }
     )
 }
 
@@ -285,17 +274,13 @@ fun NewFolderDialog(
 ) {
     var name by remember { mutableStateOf(TextFieldValue("")) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
-                onConfirm(name.text)
-                onDismiss()
-            }) { Text("Create") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("New Folder") },
-        text = { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Folder name") }) }
+    AppDialog(
+        title = "New Folder",
+        onDismiss = onDismiss,
+        confirmText = "Create",
+        onConfirm = { onConfirm(name.text) },
+        dismissText = "Cancel",
+        content = { OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Folder name") }) }
     )
 }
 
@@ -306,17 +291,13 @@ fun NewChatDialog(
 ) {
     var title by remember { mutableStateOf(TextFieldValue("")) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
-                onConfirm(title.text)
-                onDismiss()
-            }) { Text("Create") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text("New Chat") },
-        text = { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Chat title") }) }
+    AppDialog(
+        title = "New Chat",
+        onDismiss = onDismiss,
+        confirmText = "Create",
+        onConfirm = { onConfirm(title.text) },
+        dismissText = "Cancel",
+        content = { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Chat title") }) }
     )
 }
 

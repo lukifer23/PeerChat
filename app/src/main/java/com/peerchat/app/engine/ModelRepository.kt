@@ -6,6 +6,10 @@ import android.net.Uri
 import com.peerchat.app.data.OperationResult
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineRuntime
+import com.peerchat.engine.EngineMetrics
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.flow
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
@@ -38,8 +42,10 @@ class ModelRepository(
                 val manifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
                 val updated = manifest?.let { manifestService.refreshManifest(it) }
                 val finalManifest = updated ?: manifest
-                if (finalManifest != null) OperationResult.Success(finalManifest, "Model loaded successfully")
-                else OperationResult.Failure("Model loaded but manifest not found")
+                when (finalManifest) {
+                    null -> OperationResult.Failure("Model loaded but manifest not found")
+                    else -> OperationResult.Success<ModelManifest>(finalManifest, "Model loaded successfully")
+                }
             } else {
                 ModelConfigStore.clear(appContext)
                 OperationResult.Failure("Failed to load model")
@@ -82,7 +88,8 @@ class ModelRepository(
 
     suspend fun deleteManifest(manifest: ModelManifest, removeFile: Boolean): String {
         return try {
-            val isActive = isManifestActive(manifest)
+            val storedConfig = ModelConfigStore.load(appContext)
+            val isActive = storedConfig?.modelPath == manifest.filePath
             manifestService.deleteManifest(manifest, removeFile)
             if (isActive) {
                 unloadInternal()
@@ -216,6 +223,44 @@ class ModelRepository(
             }
         }
         return out.toByteArray()
+    }
+
+    // --------------------- Streaming with cache integration ---------------------
+    fun streamWithCache(
+        chatId: Long,
+        prompt: String,
+        systemPrompt: String?,
+        template: String?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        maxTokens: Int,
+        stop: Array<String>
+    ): kotlinx.coroutines.flow.Flow<EngineStreamEvent> {
+        return flow {
+            // restore best-effort
+            val restored = runCatching { restoreKv(chatId) }.getOrDefault(false)
+            if (!restored) runCatching { EngineRuntime.clearState(false) }
+            // delegate streaming
+            StreamingEngine.stream(
+                prompt = prompt,
+                systemPrompt = systemPrompt,
+                template = template,
+                temperature = temperature,
+                topP = topP,
+                topK = topK,
+                maxTokens = maxTokens,
+                stop = stop
+            ).onEach { event ->
+                emit(event)
+                if (event is EngineStreamEvent.Terminal) {
+                    val success = !event.metrics.isError
+                    runCatching {
+                        if (success) captureKv(chatId) else clearKv(chatId)
+                    }
+                }
+            }.collect { }
+        }
     }
 }
 

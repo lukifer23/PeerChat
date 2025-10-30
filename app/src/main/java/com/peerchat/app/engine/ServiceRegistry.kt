@@ -31,6 +31,10 @@ object ServiceRegistry {
         SearchService(repository)
     }
 
+    val ragRetriever: com.peerchat.rag.Retriever by lazy {
+        com.peerchat.rag.RetrieverProvider.instance
+    }
+
     // Core dependencies
     private val repository: PeerChatRepository by lazy {
         PeerChatRepository.from(context)
