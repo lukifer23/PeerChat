@@ -44,6 +44,16 @@ fun ModelsScreen(onBack: () -> Unit) {
     val manifests by modelService.getManifestsFlow().collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
+    val snackbarMessage = remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+
+    // Handle snackbar messages
+    val currentMessage = snackbarMessage.value
+    if (currentMessage != null) {
+        androidx.compose.runtime.LaunchedEffect(currentMessage) {
+            snackbar.showSnackbar(currentMessage)
+            snackbarMessage.value = null
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -104,7 +114,7 @@ fun ModelsScreen(onBack: () -> Unit) {
                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                             color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        androidx.compose.material3.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             TextButton(onClick = {
                                 scope.launch {
                                     val result = modelService.activateManifest(manifest)
@@ -112,19 +122,19 @@ fun ModelsScreen(onBack: () -> Unit) {
                                         is OperationResult.Success -> result.message
                                         is OperationResult.Failure -> result.error
                                     }
-                                    snackbar.showSnackbar(message)
+                                    snackbarMessage.value = message
                                 }
                             }) { Text("Activate") }
                             TextButton(onClick = {
                                 scope.launch {
                                     val ok = modelService.verifyManifest(manifest)
-                                    snackbar.showSnackbar(if (ok) "Checksum verified" else "File missing")
+                                    snackbarMessage.value = if (ok) "Checksum verified" else "File missing"
                                 }
                             }) { Text("Verify") }
                             TextButton(onClick = {
                                 scope.launch {
                                     val msg = modelService.deleteManifest(manifest, removeFile = true)
-                                    snackbar.showSnackbar(msg)
+                                    snackbarMessage.value = msg
                                 }
                             }) { Text("Delete") }
                         }

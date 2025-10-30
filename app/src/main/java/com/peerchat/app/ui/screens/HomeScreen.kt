@@ -40,12 +40,12 @@ import com.peerchat.app.ui.DialogState
 import com.peerchat.app.ui.HomeEvent
 import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
+import com.peerchat.app.ui.components.*
 import com.peerchat.app.ui.components.EmptyListHint
 import com.peerchat.app.ui.components.HomeListRow
 import com.peerchat.app.ui.components.HomeTopBar
 import com.peerchat.app.ui.components.SectionCard
 import com.peerchat.app.ui.components.StatusRow
-import com.peerchat.app.ui.components.Dialogs
 
 private const val ROUTE_HOME = "home"
 private const val ROUTE_CHAT = "chat/{chatId}"
@@ -317,13 +317,13 @@ fun HomeScreen(
     when (val dialogState = uiState.dialogState) {
         is DialogState.None -> Unit // No dialog
         is DialogState.Models -> {
-            Dialogs.ModelsDialog(
+            ModelsDialog(
                 manifests = uiState.manifests,
                 onDismiss = viewModel::dismissDialog
             )
         }
         is DialogState.RenameChat -> {
-            Dialogs.RenameChatDialog(
+            RenameChatDialog(
                 currentTitle = dialogState.currentTitle,
                 onConfirm = { title ->
                     viewModel.renameChat(dialogState.chatId, title)
@@ -333,7 +333,7 @@ fun HomeScreen(
             )
         }
         is DialogState.MoveChat -> {
-            Dialogs.MoveChatDialog(
+            MoveChatDialog(
                 folders = uiState.folders,
                 onMoveToFolder = { folderId ->
                     viewModel.moveChat(dialogState.chatId, folderId)
@@ -343,7 +343,7 @@ fun HomeScreen(
             )
         }
         is DialogState.ForkChat -> {
-            Dialogs.ForkChatDialog(
+            ForkChatDialog(
                 onConfirm = {
                     viewModel.forkChat(dialogState.chatId)
                     viewModel.dismissDialog()
@@ -352,7 +352,7 @@ fun HomeScreen(
             )
         }
         is DialogState.NewFolder -> {
-            Dialogs.NewFolderDialog(
+            NewFolderDialog(
                 onConfirm = { name ->
                     viewModel.createFolder(name)
                     viewModel.dismissDialog()
@@ -361,7 +361,7 @@ fun HomeScreen(
             )
         }
         is DialogState.NewChat -> {
-            Dialogs.NewChatDialog(
+            NewChatDialog(
                 onConfirm = { title ->
                     viewModel.createChat(title)
                     viewModel.dismissDialog()
@@ -370,7 +370,7 @@ fun HomeScreen(
             )
         }
         is DialogState.Settings -> {
-            Dialogs.SettingsDialog(
+            SettingsDialog(
                 state = uiState,
                 onDismiss = viewModel::dismissDialog,
                 onSysPromptChange = viewModel::updateSysPrompt,

@@ -4,9 +4,14 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.ui.DialogState
+import com.peerchat.app.ui.HomeEvent
+import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.engine.ServiceRegistry
 import com.peerchat.app.engine.EngineStreamEvent
+import com.peerchat.app.engine.ModelConfigStore
 import com.peerchat.app.engine.StreamingEngine
 import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.app.engine.PromptComposer
@@ -59,7 +64,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     // Memoization cache for expensive operations
     private val memoizationCache = mutableMapOf<String, Pair<Long, Any>>()
-    private val MEMOIZATION_TTL = 30000L // 30 seconds
+    private val MEMOIZATION_TTL: Long = 30000L // 30 seconds
 
     // Memoization helper
     private inline fun <T> memoize(key: String, block: () -> T): T {
@@ -72,7 +77,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val result = block()
-        memoizationCache[key] = Pair(currentTime, result)
+        memoizationCache[key] = Pair(currentTime, result as Any)
 
         // Clean up old entries periodically
         if (memoizationCache.size > 100) {
@@ -292,7 +297,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             viewModelScope.launch {
-                loadModelInternal(config, showToast = false)
+                val result = modelService.loadModel(config)
+                // Handle result if needed
             }
         }
     }
@@ -417,14 +423,20 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun renameChat(chatId: Long, title: String) {
         viewModelScope.launch {
             val result = repository.renameChatResult(chatId, title)
-            _events.emit(HomeEvent.Toast(result.message))
+            when (result) {
+                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
+                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
+            }
         }
     }
 
     fun moveChat(chatId: Long, folderId: Long?) {
         viewModelScope.launch {
             val result = repository.moveChatResult(chatId, folderId)
-            _events.emit(HomeEvent.Toast(result.message))
+            when (result) {
+                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
+                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
+            }
         }
     }
 
@@ -448,7 +460,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteChat(chatId: Long) {
         viewModelScope.launch {
             val result = repository.deleteChatResult(chatId)
-            _events.emit(HomeEvent.Toast(result.message))
+            when (result) {
+                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
+                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
+            }
         }
     }
 
@@ -503,7 +518,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(importingModel = true) }
             val result = modelService.loadModel(config)
             _uiState.update { it.copy(importingModel = false) }
-            _events.emit(HomeEvent.Toast(result.message))
+            when (result) {
+                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
+                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
+            }
         }
     }
 
@@ -534,18 +552,22 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.update { it.copy(importingModel = true) }
             try {
                 val result = modelService.importModel(uri)
-                if (result.success) {
-                    // Update path immediately for visibility
-                    result.manifest?.filePath?.let { path ->
-                        _uiState.update { it.copy(modelPath = path) }
+                when (result) {
+                    is OperationResult.Success -> {
+                        // Update path immediately for visibility
+                        result.data.filePath.let { path ->
+                            _uiState.update { it.copy(modelPath = path) }
+                        }
+                        // Try to load the model
+                        val loadResult = modelService.activateManifest(result.data)
+                        when (loadResult) {
+                            is OperationResult.Success -> _events.emit(HomeEvent.Toast(loadResult.message))
+                            is OperationResult.Failure -> _events.emit(HomeEvent.Toast(loadResult.error))
+                        }
                     }
-                    // Try to load the model
-                    result.manifest?.let { manifest ->
-                        val loadResult = modelService.activateManifest(manifest)
-                        _events.emit(HomeEvent.Toast(loadResult.message))
-                    } ?: _events.emit(HomeEvent.Toast(result.message))
-                } else {
-                    _events.emit(HomeEvent.Toast(result.message))
+                    is OperationResult.Failure -> {
+                        _events.emit(HomeEvent.Toast(result.error))
+                    }
                 }
             } finally {
                 _uiState.update { it.copy(importingModel = false) }
@@ -566,16 +588,21 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun activateManifest(manifest: ModelManifest) {
         viewModelScope.launch {
             val result = modelService.activateManifest(manifest)
-            if (result.success) {
-                _uiState.update {
-                    it.copy(
-                        modelPath = manifest.filePath,
-                        contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
-                        detectedTemplateId = modelService.getDetectedTemplateId(manifest)
-                    )
+            when (result) {
+                is OperationResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            modelPath = manifest.filePath,
+                            contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
+                            detectedTemplateId = modelService.getDetectedTemplateId(manifest)
+                        )
+                    }
+                    _events.emit(HomeEvent.Toast(result.message))
+                }
+                is OperationResult.Failure -> {
+                    _events.emit(HomeEvent.Toast(result.error))
                 }
             }
-            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
@@ -608,12 +635,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         // Prevent race conditions - only one send operation per chat at a time
         val existingJob = activeSendJobs[chatId]
         if (existingJob?.isActive == true) {
-            _events.emit(HomeEvent.Toast("Please wait for the current response to complete"))
+            // Silently ignore - user will see the existing operation complete
             return
         }
 
         val job = viewModelScope.launch {
-            activeSendJobs[chatId] = this
+            activeSendJobs[chatId] = coroutineContext.job
             try {
                 val restored = runCatching { modelCache.restore(chatId) }.getOrDefault(false)
                 if (!restored) {

@@ -37,15 +37,7 @@ android {
         }
     }
 
-    // Dexing optimization
-    dexOptions {
-        // Enable incremental dexing
-        incremental true
-        // Pre-dex libraries in parallel
-        preDexLibraries true
-        // Maximum number of indexed dex files
-        maxProcessCount 4
-    }
+    // Dexing optimization - removed deprecated dexOptions for AGP 8.6.1
 
     buildFeatures {
         compose true
