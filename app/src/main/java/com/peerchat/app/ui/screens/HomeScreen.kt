@@ -90,7 +90,9 @@ fun HomeScreen(
     viewModel: HomeViewModel = androidx.lifecycle.viewmodel.compose.viewModel(
         factory = object : androidx.lifecycle.ViewModelProvider.Factory {
             override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                return HomeViewModel(android.app.Application()) as T
+                val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as android.app.Application
+                @Suppress("UNCHECKED_CAST")
+                return HomeViewModel(app) as T
             }
         }
     )
