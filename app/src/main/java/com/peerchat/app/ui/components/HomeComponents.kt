@@ -12,6 +12,8 @@ import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -129,6 +131,43 @@ fun HomeTopBar(
                     androidx.compose.material3.Icon(
                         androidx.compose.material.icons.Icons.Default.Settings,
                         contentDescription = "Settings"
+                    )
+                }
+
+                // Overflow menu to ensure actions stay accessible on compact widths
+                val (menuOpen, setMenuOpen) = remember { mutableStateOf(false) }
+                androidx.compose.material3.IconButton(onClick = { setMenuOpen(true) }) {
+                    androidx.compose.material3.Icon(
+                        androidx.compose.material.icons.Icons.Default.MoreVert,
+                        contentDescription = "More"
+                    )
+                }
+                androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { setMenuOpen(false) }) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("New Chat") },
+                        onClick = { setMenuOpen(false); onNewChat() }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Import Doc") },
+                        onClick = { setMenuOpen(false); onImportDoc() },
+                        enabled = !docImportInProgress
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Import Model") },
+                        onClick = { setMenuOpen(false); onImportModel() },
+                        enabled = !modelImportInProgress
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Documents") },
+                        onClick = { setMenuOpen(false); onOpenDocuments() }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Models") },
+                        onClick = { setMenuOpen(false); onOpenModels() }
+                    )
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Settings") },
+                        onClick = { setMenuOpen(false); onOpenSettings() }
                     )
                 }
             }

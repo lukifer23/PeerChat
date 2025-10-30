@@ -91,6 +91,39 @@ class PeerChatRepository(private val database: PeerDatabase) {
 
     fun database(): PeerDatabase = database
 
+    suspend fun deleteChat(chatId: Long) = withContext(Dispatchers.IO) {
+        val db = database
+        db.messageDao().deleteByChat(chatId)
+        db.chatDao().deleteById(chatId)
+    }
+
+    suspend fun deleteFolder(folderId: Long) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val db = database
+        // Orphan chats rather than deleting to avoid data loss
+        db.chatDao().clearFolder(folderId, now)
+        db.folderDao().deleteById(folderId)
+    }
+
+    suspend fun updateChatSettings(chatId: Long, systemPrompt: String?, modelId: String?) = withContext(Dispatchers.IO) {
+        val dao = database.chatDao()
+        val base = dao.getById(chatId) ?: return@withContext
+        val updated = base.copy(
+            systemPrompt = systemPrompt ?: base.systemPrompt,
+            modelId = modelId ?: base.modelId,
+            updatedAt = System.currentTimeMillis()
+        )
+        dao.upsert(updated)
+    }
+
+    suspend fun getRecentChats(limit: Int): List<Chat> = withContext(Dispatchers.IO) {
+        database.chatDao().getRecent(limit)
+    }
+
+    suspend fun getRecentDocuments(limit: Int): List<Document> = withContext(Dispatchers.IO) {
+        database.documentDao().getRecent(limit)
+    }
+
     companion object {
         fun from(context: android.content.Context): PeerChatRepository =
             PeerChatRepository(PeerDatabaseProvider.get(context))
