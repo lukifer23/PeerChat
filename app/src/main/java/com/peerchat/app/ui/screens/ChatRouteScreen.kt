@@ -9,12 +9,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -38,13 +46,38 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
         viewModel.selectChat(chatId)
     }
 
+    var menuOpen by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
+    var showDelete by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Chat") },
+                title = {
+                    val title = uiState.chats.firstOrNull { it.id == chatId }?.title ?: "Chat"
+                    Text(title)
+                },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Rename") }, onClick = {
+                            menuOpen = false
+                            val current = uiState.chats.firstOrNull { it.id == chatId }?.title.orEmpty()
+                            renameText = current
+                            showRename = true
+                        })
+                        DropdownMenuItem(text = { Text("Delete") }, onClick = {
+                            menuOpen = false
+                            showDelete = true
+                        })
                     }
                 }
             )
@@ -67,5 +100,42 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
                 Text("Loading chat...")
             }
         }
+    }
+
+    if (showRename) {
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.renameChat(chatId, renameText)
+                    showRename = false
+                }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { showRename = false }) { Text("Cancel") } },
+            title = { Text("Rename Chat") },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = androidx.compose.ui.text.input.TextFieldValue(renameText),
+                    onValueChange = { renameText = it.text },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        )
+    }
+
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteChat(chatId)
+                    showDelete = false
+                    navController.popBackStack()
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+            title = { Text("Delete Chat") },
+            text = { Text("This will delete the chat and its messages.") }
+        )
     }
 }

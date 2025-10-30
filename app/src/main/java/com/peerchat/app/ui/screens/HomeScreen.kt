@@ -185,7 +185,18 @@ fun HomeScreen(
                 if (uiState.searchResults.isNotEmpty()) {
                     SectionCard(title = "Search Results") {
                         uiState.searchResults.forEach { result ->
-                            Text(result, style = MaterialTheme.typography.bodyMedium)
+                            val label = result
+                            androidx.compose.material3.TextButton(onClick = {
+                                if (label.startsWith("Msg:#")) {
+                                    val idPart = label.substringAfter("Msg:#").substringBefore(":").toLongOrNull()
+                                    val target = idPart ?: uiState.activeChatId
+                                    target?.let { navController.navigate("chat/${it}") }
+                                } else {
+                                    navController.navigate(ROUTE_DOCUMENTS)
+                                }
+                            }) {
+                                Text(label, style = MaterialTheme.typography.bodyMedium)
+                            }
                         }
                     }
                 }
