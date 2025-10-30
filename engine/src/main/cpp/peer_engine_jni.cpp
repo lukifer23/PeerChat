@@ -867,3 +867,65 @@ Java_com_peerchat_engine_EngineNative_stateClear(JNIEnv * env, jobject thiz, jbo
     llama_memory_clear(llama_get_memory(g_state.ctx), clearData == JNI_TRUE);
     reset_metrics_locked();
 }
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_peerchat_engine_EngineNative_stateSize(JNIEnv * env, jobject thiz) {
+    (void) env;
+    (void) thiz;
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return 0;
+    }
+    const size_t size = llama_state_get_size(g_state.ctx);
+    if (size == 0) {
+        return 0;
+    }
+    return static_cast<jint>(size > 0x7fffffffULL ? 0x7fffffff : size);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_peerchat_engine_EngineNative_stateCaptureInto(JNIEnv * env, jobject thiz, jobject jBuffer) {
+    (void) thiz;
+    if (!jBuffer) {
+        return 0;
+    }
+    void * addr = env->GetDirectBufferAddress(jBuffer);
+    const jlong capacity = env->GetDirectBufferCapacity(jBuffer);
+    if (!addr || capacity <= 0) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return 0;
+    }
+    const size_t total = llama_state_get_size(g_state.ctx);
+    if (total == 0) {
+        return 0;
+    }
+    const size_t to_write = static_cast<size_t>(capacity < static_cast<jlong>(total) ? capacity : static_cast<jlong>(total));
+    const size_t written = llama_state_get_data(g_state.ctx, static_cast<uint8_t*>(addr), to_write);
+    return static_cast<jint>(written > 0x7fffffffULL ? 0x7fffffff : written);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_peerchat_engine_EngineNative_stateRestoreFrom(JNIEnv * env, jobject thiz, jobject jBuffer, jint length) {
+    (void) thiz;
+    if (!jBuffer || length <= 0) {
+        return JNI_FALSE;
+    }
+    void * addr = env->GetDirectBufferAddress(jBuffer);
+    if (!addr) {
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+    if (!g_state.ctx) {
+        return JNI_FALSE;
+    }
+    llama_memory_clear(llama_get_memory(g_state.ctx), false);
+    const size_t read = llama_state_set_data(g_state.ctx, static_cast<const uint8_t*>(addr), static_cast<size_t>(length));
+    const bool ok = read > 0;
+    if (ok) {
+        reset_metrics_locked();
+    }
+    return ok ? JNI_TRUE : JNI_FALSE;
+}

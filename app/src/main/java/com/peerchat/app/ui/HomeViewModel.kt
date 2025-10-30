@@ -640,7 +640,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val job = viewModelScope.launch {
-            activeSendJobs[chatId] = coroutineContext.job
+            activeSendJobs[chatId] = this as kotlinx.coroutines.Job
             try {
                 val restored = runCatching { modelCache.restore(chatId) }.getOrDefault(false)
                 if (!restored) {

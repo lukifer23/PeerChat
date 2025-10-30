@@ -1,6 +1,7 @@
 package com.peerchat.app.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -25,6 +26,7 @@ import com.peerchat.app.engine.ServiceRegistry
 import com.peerchat.data.db.Document
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()

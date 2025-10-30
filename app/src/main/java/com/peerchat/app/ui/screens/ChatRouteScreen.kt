@@ -1,6 +1,7 @@
 package com.peerchat.app.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +31,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.peerchat.app.ui.HomeViewModel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
     val context = androidx.compose.ui.platform.LocalContext.current

@@ -53,4 +53,11 @@ object EngineNative {
     external fun stateRestore(state: ByteArray): Boolean
 
     external fun stateClear(clearData: Boolean)
+
+    // Zero-copy state operations using direct ByteBuffer
+    external fun stateSize(): Int
+
+    external fun stateCaptureInto(buffer: java.nio.ByteBuffer): Int
+
+    external fun stateRestoreFrom(buffer: java.nio.ByteBuffer, length: Int): Boolean
 }

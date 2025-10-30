@@ -12,7 +12,7 @@ android {
         targetSdk 34
         externalNativeBuild {
             cmake {
-                cppFlags "-std=c++20 -O3 -fvisibility=hidden"
+                    cppFlags "-std=c++20 -O3 -fvisibility=hidden -DNDEBUG -ffunction-sections -fdata-sections -flto -march=armv8-a"
                 arguments "-DGGML_USE_VULKAN=ON", "-DGGML_VULKAN_CHECK_RESULTS=ON", "-DGGML_USE_K_QUANTS=ON"
             }
         }

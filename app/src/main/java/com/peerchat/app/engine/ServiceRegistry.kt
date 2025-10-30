@@ -15,12 +15,12 @@ object ServiceRegistry {
         this.context = context.applicationContext
     }
 
+    val modelRepository: ModelRepository by lazy {
+        ModelRepository(context = context, manifestService = modelManifestService)
+    }
+
     val modelService: ModelService by lazy {
-        ModelService(
-            context = context,
-            manifestService = modelManifestService,
-            modelCache = ModelStateCache(context)
-        )
+        ModelService(modelRepository)
     }
 
     val documentService: DocumentService by lazy {
