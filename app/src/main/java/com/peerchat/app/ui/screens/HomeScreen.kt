@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ElevatedCard
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,26 +16,13 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,37 +32,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
-import androidx.work.WorkInfo
-import com.peerchat.app.engine.DefaultModel
-import com.peerchat.app.engine.DefaultModels
-import com.peerchat.app.engine.ModelDownloadManager
 import com.peerchat.app.ui.HomeEvent
 import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
-import com.peerchat.engine.EngineMetrics
-import com.peerchat.engine.EngineRuntime
-import com.peerchat.app.ui.components.StatusRow
-import com.peerchat.app.ui.components.SectionCard
-import com.peerchat.app.ui.components.HomeListRow
 import com.peerchat.app.ui.components.EmptyListHint
+import com.peerchat.app.ui.components.HomeListRow
 import com.peerchat.app.ui.components.HomeTopBar
-import com.peerchat.app.ui.components.SettingsDialog
-import com.peerchat.app.ui.components.ModelCatalogRow
-import com.peerchat.app.ui.components.rememberDownloadInfo
-import com.peerchat.app.ui.components.openUrl
-import dev.jeziellago.compose.markdowntext.MarkdownText
-import java.io.File
-import java.util.Locale
-import java.util.regex.Pattern
+import com.peerchat.app.ui.components.SectionCard
+import com.peerchat.app.ui.components.StatusRow
+import com.peerchat.app.ui.components.Dialogs
 
 private const val ROUTE_HOME = "home"
 private const val ROUTE_CHAT = "chat/{chatId}"
@@ -117,8 +86,6 @@ fun HomeScreen(
     val moveTargetId = remember { mutableStateOf<Long?>(null) }
     val forkTargetId = remember { mutableStateOf<Long?>(null) }
     var tempName by remember { mutableStateOf(TextFieldValue("")) }
-    var showDeleteChatId by remember { mutableStateOf<Long?>(null) }
-    var showDeleteFolderId by remember { mutableStateOf<Long?>(null) }
 
     val documentImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
@@ -131,16 +98,11 @@ fun HomeScreen(
         }
     }
 
-    val configuration = LocalConfiguration.current
-    val screenWidthDp = configuration.screenWidthDp
-    val isTopBarCompact = screenWidthDp < 720
-
     Scaffold(
         topBar = {
             HomeTopBar(
                 docImportInProgress = uiState.indexing,
                 modelImportInProgress = uiState.importingModel,
-                compact = isTopBarCompact,
                 onNewChat = {
                     tempName = TextFieldValue("")
                     showNewChat = true
@@ -185,26 +147,32 @@ fun HomeScreen(
                 if (uiState.searchResults.isNotEmpty()) {
                     SectionCard(title = "Search Results") {
                         uiState.searchResults.forEach { result ->
-                            val label = result
-                            androidx.compose.material3.TextButton(onClick = {
-                                if (label.startsWith("Msg:#")) {
-                                    val idPart = label.substringAfter("Msg:#").substringBefore(":").toLongOrNull()
-                                    val target = idPart ?: uiState.activeChatId
-                                    target?.let { navController.navigate("chat/${it}") }
-                                } else {
-                                    navController.navigate(ROUTE_DOCUMENTS)
-                                }
-                            }) {
-                                Text(label, style = MaterialTheme.typography.bodyMedium)
-                            }
+                            Text(result, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
                 if (isCompact) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                            Box(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("Open a chat to begin", style = MaterialTheme.typography.bodyMedium)
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 260.dp)
+                        ) {
+                            if (uiState.activeChatId != null) {
+                                ChatScreen(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(16.dp),
+                                    enabled = true,
+                                    messages = uiState.messages,
+                                    onSend = { prompt, onToken, onComplete ->
+                                        viewModel.sendPrompt(prompt, onToken, onComplete)
+                                    }
+                                )
+                            } else {
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
+                                }
                             }
                         }
                         SectionCard(
@@ -223,8 +191,7 @@ fun HomeScreen(
                                         title = folder.name,
                                         subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
                                         actions = listOf(
-                                            "Open" to { viewModel.selectFolder(folder.id) },
-                                            "Delete" to { showDeleteFolderId = folder.id }
+                                            "Open" to { viewModel.selectFolder(folder.id) }
                                         )
                                     )
                                 }
@@ -245,7 +212,7 @@ fun HomeScreen(
                                     HomeListRow(
                                         title = chat.title,
                                         actions = listOf(
-                                            "Open" to { navController.navigate("chat/${chat.id}") },
+                                            "Open" to { viewModel.selectChat(chat.id) },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
@@ -258,8 +225,7 @@ fun HomeScreen(
                                             "Fork" to {
                                                 forkTargetId.value = chat.id
                                                 showForkDialog.value = true
-                                            },
-                                            "Delete" to { showDeleteChatId = chat.id }
+                                            }
                                         )
                                     )
                                 }
@@ -289,13 +255,12 @@ fun HomeScreen(
                                     EmptyListHint("No folders yet.")
                                 } else {
                                     uiState.folders.forEach { folder ->
-                                    HomeListRow(
+                                        HomeListRow(
                                             title = folder.name,
                                             subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
-                                        actions = listOf(
-                                            "Open" to { viewModel.selectFolder(folder.id) },
-                                            "Delete" to { showDeleteFolderId = folder.id }
-                                        )
+                                            actions = listOf(
+                                                "Open" to { viewModel.selectFolder(folder.id) }
+                                            )
                                         )
                                     }
                                 }
@@ -312,7 +277,7 @@ fun HomeScreen(
                                     EmptyListHint("No chats yet.")
                                 } else {
                                     uiState.chats.forEach { chat ->
-                                    HomeListRow(
+                                        HomeListRow(
                                             title = chat.title,
                                             actions = listOf(
                                                 "Open" to { viewModel.selectChat(chat.id) },
@@ -327,9 +292,8 @@ fun HomeScreen(
                                                 },
                                                 "Fork" to {
                                                     forkTargetId.value = chat.id
-                                                showForkDialog.value = true
-                                            },
-                                            "Delete" to { showDeleteChatId = chat.id }
+                                                    showForkDialog.value = true
+                                                }
                                             )
                                         )
                                     }
@@ -366,150 +330,65 @@ fun HomeScreen(
 
     // Dialogs
     if (showModels) {
-        AlertDialog(
-            onDismissRequest = { showModels = false },
-            confirmButton = { TextButton(onClick = { showModels = false }) { Text("Close") } },
-            title = { Text("Models") },
-            text = {
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    DefaultModels.list.forEach { model ->
-                        val workInfo = rememberDownloadInfo(model)
-                        val manifest = uiState.manifests.firstOrNull { File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
-                        ModelCatalogRow(
-                            model = model,
-                            manifest = manifest,
-                            workInfo = workInfo,
-                            onDownload = { ModelDownloadManager.enqueue(context, model) },
-                            onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
-                            onOpenCard = { openUrl(context, model.cardUrl) }
-                        )
-                        HorizontalDivider()
-                    }
-                }
-            }
+        Dialogs.ModelsDialog(
+            manifests = uiState.manifests,
+            onDismiss = { showModels = false }
         )
     }
 
     if (showRenameDialog.value && renameTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showRenameDialog.value = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    val id = renameTargetId.value ?: return@TextButton
-                    viewModel.renameChat(id, tempName.text)
-                    showRenameDialog.value = false
-                }) { Text("Save") }
+        val chatTitle = uiState.chats.find { it.id == renameTargetId.value }?.title ?: ""
+        Dialogs.RenameChatDialog(
+            currentTitle = chatTitle,
+            onConfirm = { title ->
+                val id = renameTargetId.value ?: return@RenameChatDialog
+                viewModel.renameChat(id, title)
             },
-            dismissButton = { TextButton(onClick = { showRenameDialog.value = false }) { Text("Cancel") } },
-            title = { Text("Rename Chat") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }) }
+            onDismiss = { showRenameDialog.value = false }
         )
     }
 
     if (showMoveDialog.value && moveTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showMoveDialog.value = false },
-            confirmButton = { TextButton(onClick = { showMoveDialog.value = false }) { Text("Close") } },
-            title = { Text("Move Chat to Folder") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        val id = moveTargetId.value ?: return@TextButton
-                        viewModel.moveChat(id, null)
-                        showMoveDialog.value = false
-                    }) { Text("No folder") }
-                    androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 240.dp)) {
-                        items(uiState.folders) { folder ->
-                            TextButton(onClick = {
-                                val id = moveTargetId.value ?: return@TextButton
-                                viewModel.moveChat(id, folder.id)
-                                showMoveDialog.value = false
-                            }) { Text(folder.name) }
-                        }
-                    }
-                }
-            }
+        Dialogs.MoveChatDialog(
+            folders = uiState.folders,
+            onMoveToFolder = { folderId ->
+                val id = moveTargetId.value ?: return@MoveChatDialog
+                viewModel.moveChat(id, folderId)
+            },
+            onDismiss = { showMoveDialog.value = false }
         )
     }
 
     if (showForkDialog.value && forkTargetId.value != null) {
-        AlertDialog(
-            onDismissRequest = { showForkDialog.value = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    val id = forkTargetId.value ?: return@TextButton
-                    viewModel.forkChat(id)
-                    showForkDialog.value = false
-                }) { Text("Fork") }
+        Dialogs.ForkChatDialog(
+            onConfirm = {
+                val id = forkTargetId.value ?: return@ForkChatDialog
+                viewModel.forkChat(id)
             },
-            dismissButton = { TextButton(onClick = { showForkDialog.value = false }) { Text("Cancel") } },
-            title = { Text("Fork Chat") },
-            text = { Text("Create a duplicate conversation including existing messages?") }
-        )
-    }
-
-    showDeleteChatId?.let { id ->
-        AlertDialog(
-            onDismissRequest = { showDeleteChatId = null },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteChat(id)
-                    showDeleteChatId = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { showDeleteChatId = null }) { Text("Cancel") } },
-            title = { Text("Delete Chat") },
-            text = { Text("This will delete the chat and its messages.") }
-        )
-    }
-
-    showDeleteFolderId?.let { id ->
-        AlertDialog(
-            onDismissRequest = { showDeleteFolderId = null },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteFolder(id)
-                    showDeleteFolderId = null
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { showDeleteFolderId = null }) { Text("Cancel") } },
-            title = { Text("Delete Folder") },
-            text = { Text("Chats will be kept and unassigned from the folder.") }
+            onDismiss = { showForkDialog.value = false }
         )
     }
 
     if (showNewFolder) {
-        AlertDialog(
-            onDismissRequest = { showNewFolder = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.createFolder(tempName.text)
-                    showNewFolder = false
-                }) { Text("Create") }
+        Dialogs.NewFolderDialog(
+            onConfirm = { name ->
+                viewModel.createFolder(name)
             },
-            dismissButton = { TextButton(onClick = { showNewFolder = false }) { Text("Cancel") } },
-            title = { Text("New Folder") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Folder name") }) }
+            onDismiss = { showNewFolder = false }
         )
     }
 
     if (showNewChat) {
-        AlertDialog(
-            onDismissRequest = { showNewChat = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.createChat(tempName.text)
-                    showNewChat = false
-                }) { Text("Create") }
+        Dialogs.NewChatDialog(
+            onConfirm = { title ->
+                viewModel.createChat(title)
             },
-            dismissButton = { TextButton(onClick = { showNewChat = false }) { Text("Cancel") } },
-            title = { Text("New Chat") },
-            text = { OutlinedTextField(value = tempName, onValueChange = { tempName = it }, placeholder = { Text("Chat title") }) }
+            onDismiss = { showNewChat = false }
         )
     }
 
     if (showSettings) {
-        SettingsDialog(
+        Dialogs.SettingsDialog(
             state = uiState,
             onDismiss = { showSettings = false },
             onSysPromptChange = viewModel::updateSysPrompt,
