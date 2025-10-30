@@ -4,11 +4,13 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.engine.ServiceRegistry
 import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.StreamingEngine
 import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.app.engine.PromptComposer
+import com.peerchat.app.engine.ModelStateCache
 import com.peerchat.app.util.optFloatOrNull
 import com.peerchat.app.util.optIntOrNull
 import com.peerchat.app.util.optStringOrNull
@@ -17,6 +19,7 @@ import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 import com.peerchat.templates.TemplateCatalog
 import com.peerchat.app.docs.OcrService
+import com.peerchat.rag.RagService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -48,6 +51,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val documentService = ServiceRegistry.documentService
     private val chatService = ServiceRegistry.chatService
     private val searchService = ServiceRegistry.searchService
+
+    // Direct repository access for fine-grained DB operations
+    private val repository: PeerChatRepository = PeerChatRepository.from(appContext)
+
+    // Cache model KV state per chat to enable fast context restore
+    private val modelCache = ModelStateCache(appContext)
 
     private val templateOptions = TemplateCatalog.descriptors().map {
         TemplateOption(
@@ -369,6 +378,21 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 loadChatSettings(result.chatId)
             }
             _events.emit(HomeEvent.Toast(result.message))
+        }
+    }
+
+    fun deleteChat(chatId: Long) {
+        viewModelScope.launch {
+            val result = chatService.deleteChat(chatId)
+            _events.emit(HomeEvent.Toast(result.message))
+        }
+    }
+
+    fun deleteFolder(folderId: Long) {
+        viewModelScope.launch {
+            runCatching { repository.deleteFolder(folderId) }
+                .onSuccess { _events.emit(HomeEvent.Toast("Folder deleted")) }
+                .onFailure { _events.emit(HomeEvent.Toast("Delete error: ${'$'}{it.message}")) }
         }
     }
 

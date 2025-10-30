@@ -13,6 +13,9 @@ interface FolderDao {
 
     @Query("SELECT * FROM folders ORDER BY updatedAt DESC")
     fun observeAll(): Flow<List<Folder>>
+
+    @Query("DELETE FROM folders WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
 
 @Dao
@@ -31,6 +34,15 @@ interface ChatDao {
 
     @Query("SELECT * FROM chats WHERE id = :id")
     suspend fun getById(id: Long): Chat?
+
+    @Query("DELETE FROM chats WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("UPDATE chats SET folderId = NULL, updatedAt = :now WHERE folderId = :folderId")
+    suspend fun clearFolder(folderId: Long, now: Long)
+
+    @Query("SELECT * FROM chats ORDER BY updatedAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int): List<Chat>
 }
 
 @Dao
@@ -46,6 +58,9 @@ interface MessageDao {
 
     @Query("SELECT messages.* FROM messages JOIN messages_fts ON(messages_fts.contentMarkdown MATCH :query) WHERE messages.rowid = messages_fts.rowid ORDER BY messages.id DESC LIMIT :limit")
     suspend fun searchText(query: String, limit: Int = 50): List<Message>
+
+    @Query("DELETE FROM messages WHERE chatId = :chatId")
+    suspend fun deleteByChat(chatId: Long)
 }
 
 @Dao
@@ -58,6 +73,9 @@ interface DocumentDao {
 
     @Query("DELETE FROM documents WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM documents ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int): List<Document>
 }
 
 @Dao

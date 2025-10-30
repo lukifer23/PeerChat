@@ -108,6 +108,8 @@ fun HomeScreen(
     val moveTargetId = remember { mutableStateOf<Long?>(null) }
     val forkTargetId = remember { mutableStateOf<Long?>(null) }
     var tempName by remember { mutableStateOf(TextFieldValue("")) }
+    var showDeleteChatId by remember { mutableStateOf<Long?>(null) }
+    var showDeleteFolderId by remember { mutableStateOf<Long?>(null) }
 
     val documentImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
@@ -175,26 +177,9 @@ fun HomeScreen(
                 }
                 if (isCompact) {
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 260.dp)
-                        ) {
-                            if (uiState.activeChatId != null) {
-                                ChatScreen(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    enabled = true,
-                                    messages = uiState.messages,
-                                    onSend = { prompt, onToken, onComplete ->
-                                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                                    }
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
-                                }
+                        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                            Box(Modifier.fillMaxWidth().padding(16.dp)) {
+                                Text("Open a chat to begin", style = MaterialTheme.typography.bodyMedium)
                             }
                         }
                         SectionCard(
@@ -213,7 +198,8 @@ fun HomeScreen(
                                         title = folder.name,
                                         subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
                                         actions = listOf(
-                                            "Open" to { viewModel.selectFolder(folder.id) }
+                                            "Open" to { viewModel.selectFolder(folder.id) },
+                                            "Delete" to { showDeleteFolderId = folder.id }
                                         )
                                     )
                                 }
@@ -234,7 +220,7 @@ fun HomeScreen(
                                     HomeListRow(
                                         title = chat.title,
                                         actions = listOf(
-                                            "Open" to { viewModel.selectChat(chat.id) },
+                                            "Open" to { navController.navigate("chat/${'$'}{chat.id}") },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
@@ -247,7 +233,8 @@ fun HomeScreen(
                                             "Fork" to {
                                                 forkTargetId.value = chat.id
                                                 showForkDialog.value = true
-                                            }
+                                            },
+                                            "Delete" to { showDeleteChatId = chat.id }
                                         )
                                     )
                                 }
@@ -277,12 +264,13 @@ fun HomeScreen(
                                     EmptyListHint("No folders yet.")
                                 } else {
                                     uiState.folders.forEach { folder ->
-                                        HomeListRow(
+                                    HomeListRow(
                                             title = folder.name,
                                             subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
-                                            actions = listOf(
-                                                "Open" to { viewModel.selectFolder(folder.id) }
-                                            )
+                                        actions = listOf(
+                                            "Open" to { viewModel.selectFolder(folder.id) },
+                                            "Delete" to { showDeleteFolderId = folder.id }
+                                        )
                                         )
                                     }
                                 }
@@ -299,7 +287,7 @@ fun HomeScreen(
                                     EmptyListHint("No chats yet.")
                                 } else {
                                     uiState.chats.forEach { chat ->
-                                        HomeListRow(
+                                    HomeListRow(
                                             title = chat.title,
                                             actions = listOf(
                                                 "Open" to { viewModel.selectChat(chat.id) },
@@ -314,8 +302,9 @@ fun HomeScreen(
                                                 },
                                                 "Fork" to {
                                                     forkTargetId.value = chat.id
-                                                    showForkDialog.value = true
-                                                }
+                                                showForkDialog.value = true
+                                            },
+                                            "Delete" to { showDeleteChatId = chat.id }
                                             )
                                         )
                                     }
@@ -431,6 +420,36 @@ fun HomeScreen(
             dismissButton = { TextButton(onClick = { showForkDialog.value = false }) { Text("Cancel") } },
             title = { Text("Fork Chat") },
             text = { Text("Create a duplicate conversation including existing messages?") }
+        )
+    }
+
+    showDeleteChatId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { showDeleteChatId = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteChat(id)
+                    showDeleteChatId = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteChatId = null }) { Text("Cancel") } },
+            title = { Text("Delete Chat") },
+            text = { Text("This will delete the chat and its messages.") }
+        )
+    }
+
+    showDeleteFolderId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { showDeleteFolderId = null },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteFolder(id)
+                    showDeleteFolderId = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteFolderId = null }) { Text("Cancel") } },
+            title = { Text("Delete Folder") },
+            text = { Text("Chats will be kept and unassigned from the folder.") }
         )
     }
 
