@@ -17,13 +17,17 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import com.peerchat.app.data.OperationResult
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Row
 import com.peerchat.app.engine.DefaultModels
 import com.peerchat.app.engine.ModelDownloadManager
 import com.peerchat.app.engine.ServiceRegistry
@@ -74,7 +78,11 @@ fun ModelsScreen(onBack: () -> Unit) {
                         onActivate = manifest?.let { m -> {
                             scope.launch {
                                 val result = modelService.activateManifest(m)
-                                snackbar.showSnackbar(result.message)
+                                val message = when (result) {
+                                    is OperationResult.Success -> result.message
+                                    is OperationResult.Failure -> result.error
+                                }
+                                snackbar.showSnackbar(message)
                             }
                         } },
                         onOpenCard = { com.peerchat.app.ui.components.openUrl(context, model.cardUrl) }
@@ -100,7 +108,11 @@ fun ModelsScreen(onBack: () -> Unit) {
                             TextButton(onClick = {
                                 scope.launch {
                                     val result = modelService.activateManifest(manifest)
-                                    snackbar.showSnackbar(result.message)
+                                    val message = when (result) {
+                                        is OperationResult.Success -> result.message
+                                        is OperationResult.Failure -> result.error
+                                    }
+                                    snackbar.showSnackbar(message)
                                 }
                             }) { Text("Activate") }
                             TextButton(onClick = {

@@ -4,38 +4,27 @@ import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.data.db.Document
 import com.peerchat.rag.RagService
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileInputStream
 import java.security.MessageDigest
 
 /**
  * Service for managing document operations including import, indexing, and deletion.
+ * Handles text extraction from various document formats.
  */
 class DocumentService(
     private val context: Context,
     private val repository: PeerChatRepository
 ) {
-    data class ImportResult(
-        val success: Boolean,
-        val message: String,
-        val document: Document? = null
-    )
-
-    data class DeleteResult(
-        val success: Boolean,
-        val message: String
-    )
-
     /**
      * Import a document from a URI and index it for RAG.
      */
-    suspend fun importDocument(uri: Uri): ImportResult = withContext(Dispatchers.IO) {
+    suspend fun importDocument(uri: Uri): OperationResult<Document> = withContext(Dispatchers.IO) {
         try {
             val resolver = context.contentResolver
             val mime = resolver.getType(uri) ?: "application/octet-stream"
@@ -43,7 +32,7 @@ class DocumentService(
             val text = extractText(resolver, uri, mime)
 
             if (text.isBlank()) {
-                return@withContext ImportResult(success = false, message = "No text content found in document")
+                return@withContext OperationResult.Failure("No text content found in document")
             }
 
             val document = Document(
@@ -62,38 +51,34 @@ class DocumentService(
             // Index the document for RAG
             RagService.indexDocument(repository.database(), indexedDocument, text)
 
-            ImportResult(
-                success = true,
-                message = "Document indexed successfully",
-                document = indexedDocument
-            )
+            OperationResult.Success(indexedDocument, "Document indexed successfully")
         } catch (e: Exception) {
-            ImportResult(success = false, message = "Import error: ${e.message}")
+            OperationResult.Failure("Import error: ${e.message}")
         }
     }
 
     /**
      * Delete a document and its associated chunks.
      */
-    suspend fun deleteDocument(documentId: Long): DeleteResult = withContext(Dispatchers.IO) {
+    suspend fun deleteDocument(documentId: Long): OperationResult<Unit> = withContext(Dispatchers.IO) {
         try {
             repository.deleteDocument(documentId)
-            DeleteResult(success = true, message = "Document deleted")
+            OperationResult.Success(Unit, "Document deleted")
         } catch (e: Exception) {
-            DeleteResult(success = false, message = "Delete error: ${e.message}")
+            OperationResult.Failure("Delete error: ${e.message}")
         }
     }
 
     /**
      * Re-index a document with updated content.
      */
-    suspend fun reindexDocument(document: Document): ImportResult = withContext(Dispatchers.IO) {
+    suspend fun reindexDocument(document: Document): OperationResult<Document> = withContext(Dispatchers.IO) {
         try {
             val text = String(document.textBytes)
             RagService.indexDocument(repository.database(), document, text)
-            ImportResult(success = true, message = "Document re-indexed", document = document)
+            OperationResult.Success(document, "Document re-indexed")
         } catch (e: Exception) {
-            ImportResult(success = false, message = "Re-index error: ${e.message}")
+            OperationResult.Failure("Re-index error: ${e.message}")
         }
     }
 

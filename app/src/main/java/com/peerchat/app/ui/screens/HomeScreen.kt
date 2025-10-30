@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ElevatedCard
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
+import com.peerchat.app.ui.DialogState
 import com.peerchat.app.ui.HomeEvent
 import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
@@ -75,16 +76,6 @@ fun HomeScreen(
         }
     }
 
-    var showSettings by remember { mutableStateOf(false) }
-    var showModels by remember { mutableStateOf(false) }
-    var showNewFolder by remember { mutableStateOf(false) }
-    var showNewChat by remember { mutableStateOf(false) }
-    val showRenameDialog = remember { mutableStateOf(false) }
-    val showMoveDialog = remember { mutableStateOf(false) }
-    val showForkDialog = remember { mutableStateOf(false) }
-    val renameTargetId = remember { mutableStateOf<Long?>(null) }
-    val moveTargetId = remember { mutableStateOf<Long?>(null) }
-    val forkTargetId = remember { mutableStateOf<Long?>(null) }
     var tempName by remember { mutableStateOf(TextFieldValue("")) }
 
     val documentImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -105,7 +96,7 @@ fun HomeScreen(
                 modelImportInProgress = uiState.importingModel,
                 onNewChat = {
                     tempName = TextFieldValue("")
-                    showNewChat = true
+                    viewModel.showNewChatDialog()
                 },
                 onImportDoc = {
                     documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
@@ -114,7 +105,7 @@ fun HomeScreen(
                     modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
                 },
                 onOpenModels = { navController.navigate(ROUTE_MODELS) },
-                onOpenSettings = { showSettings = true },
+                onOpenSettings = { viewModel.showSettingsDialog() },
                 onOpenDocuments = { navController.navigate(ROUTE_DOCUMENTS) }
             )
         }
@@ -180,7 +171,7 @@ fun HomeScreen(
                             actionLabel = "New",
                             onAction = {
                                 tempName = TextFieldValue("")
-                                showNewFolder = true
+                                viewModel.showNewFolderDialog()
                             }
                         ) {
                             if (uiState.folders.isEmpty()) {
@@ -202,7 +193,7 @@ fun HomeScreen(
                             actionLabel = "New",
                             onAction = {
                                 tempName = TextFieldValue("")
-                                showNewChat = true
+                                viewModel.showNewChatDialog()
                             }
                         ) {
                             if (uiState.chats.isEmpty()) {
@@ -215,16 +206,13 @@ fun HomeScreen(
                                             "Open" to { viewModel.selectChat(chat.id) },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
-                                                renameTargetId.value = chat.id
-                                                showRenameDialog.value = true
+                                                viewModel.showRenameChatDialog(chat.id, chat.title)
                                             },
                                             "Move" to {
-                                                moveTargetId.value = chat.id
-                                                showMoveDialog.value = true
+                                                viewModel.showMoveChatDialog(chat.id)
                                             },
                                             "Fork" to {
-                                                forkTargetId.value = chat.id
-                                                showForkDialog.value = true
+                                                viewModel.showForkChatDialog(chat.id)
                                             }
                                         )
                                     )
@@ -246,10 +234,10 @@ fun HomeScreen(
                             SectionCard(
                                 title = "Folders",
                                 actionLabel = "New",
-                                onAction = {
-                                    tempName = TextFieldValue("")
-                                    showNewFolder = true
-                                }
+                            onAction = {
+                                tempName = TextFieldValue("")
+                                viewModel.showNewFolderDialog()
+                            }
                             ) {
                                 if (uiState.folders.isEmpty()) {
                                     EmptyListHint("No folders yet.")
@@ -270,7 +258,7 @@ fun HomeScreen(
                                 actionLabel = "New",
                                 onAction = {
                                     tempName = TextFieldValue("")
-                                    showNewChat = true
+                                    viewModel.showNewChatDialog()
                                 }
                             ) {
                                 if (uiState.chats.isEmpty()) {
@@ -283,16 +271,13 @@ fun HomeScreen(
                                                 "Open" to { viewModel.selectChat(chat.id) },
                                                 "Rename" to {
                                                     tempName = TextFieldValue(chat.title)
-                                                    renameTargetId.value = chat.id
-                                                    showRenameDialog.value = true
+                                                    viewModel.showRenameChatDialog(chat.id, chat.title)
                                                 },
                                                 "Move" to {
-                                                    moveTargetId.value = chat.id
-                                                    showMoveDialog.value = true
+                                                    viewModel.showMoveChatDialog(chat.id)
                                                 },
                                                 "Fork" to {
-                                                    forkTargetId.value = chat.id
-                                                    showForkDialog.value = true
+                                                    viewModel.showForkChatDialog(chat.id)
                                                 }
                                             )
                                         )
@@ -328,84 +313,82 @@ fun HomeScreen(
         }
     }
 
-    // Dialogs
-    if (showModels) {
-        Dialogs.ModelsDialog(
-            manifests = uiState.manifests,
-            onDismiss = { showModels = false }
-        )
-    }
-
-    if (showRenameDialog.value && renameTargetId.value != null) {
-        val chatTitle = uiState.chats.find { it.id == renameTargetId.value }?.title ?: ""
-        Dialogs.RenameChatDialog(
-            currentTitle = chatTitle,
-            onConfirm = { title ->
-                val id = renameTargetId.value ?: return@RenameChatDialog
-                viewModel.renameChat(id, title)
-            },
-            onDismiss = { showRenameDialog.value = false }
-        )
-    }
-
-    if (showMoveDialog.value && moveTargetId.value != null) {
-        Dialogs.MoveChatDialog(
-            folders = uiState.folders,
-            onMoveToFolder = { folderId ->
-                val id = moveTargetId.value ?: return@MoveChatDialog
-                viewModel.moveChat(id, folderId)
-            },
-            onDismiss = { showMoveDialog.value = false }
-        )
-    }
-
-    if (showForkDialog.value && forkTargetId.value != null) {
-        Dialogs.ForkChatDialog(
-            onConfirm = {
-                val id = forkTargetId.value ?: return@ForkChatDialog
-                viewModel.forkChat(id)
-            },
-            onDismiss = { showForkDialog.value = false }
-        )
-    }
-
-    if (showNewFolder) {
-        Dialogs.NewFolderDialog(
-            onConfirm = { name ->
-                viewModel.createFolder(name)
-            },
-            onDismiss = { showNewFolder = false }
-        )
-    }
-
-    if (showNewChat) {
-        Dialogs.NewChatDialog(
-            onConfirm = { title ->
-                viewModel.createChat(title)
-            },
-            onDismiss = { showNewChat = false }
-        )
-    }
-
-    if (showSettings) {
-        Dialogs.SettingsDialog(
-            state = uiState,
-            onDismiss = { showSettings = false },
-            onSysPromptChange = viewModel::updateSysPrompt,
-            onTemperatureChange = viewModel::updateTemperature,
-            onTopPChange = viewModel::updateTopP,
-            onTopKChange = viewModel::updateTopK,
-            onMaxTokensChange = viewModel::updateMaxTokens,
-            onModelPathChange = viewModel::updateModelPath,
-            onThreadChange = viewModel::updateThreadText,
-            onContextChange = viewModel::updateContextText,
-            onGpuChange = viewModel::updateGpuText,
-            onUseVulkanChange = viewModel::updateUseVulkan,
-            onLoadModel = viewModel::loadModelFromInputs,
-            onUnloadModel = viewModel::unloadModel,
-            onSelectManifest = viewModel::activateManifest,
-            onDeleteManifest = viewModel::deleteManifest,
-            onTemplateSelect = viewModel::updateTemplate
-        )
+    // Unified Dialog Rendering
+    when (val dialogState = uiState.dialogState) {
+        is DialogState.None -> Unit // No dialog
+        is DialogState.Models -> {
+            Dialogs.ModelsDialog(
+                manifests = uiState.manifests,
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.RenameChat -> {
+            Dialogs.RenameChatDialog(
+                currentTitle = dialogState.currentTitle,
+                onConfirm = { title ->
+                    viewModel.renameChat(dialogState.chatId, title)
+                    viewModel.dismissDialog()
+                },
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.MoveChat -> {
+            Dialogs.MoveChatDialog(
+                folders = uiState.folders,
+                onMoveToFolder = { folderId ->
+                    viewModel.moveChat(dialogState.chatId, folderId)
+                    viewModel.dismissDialog()
+                },
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.ForkChat -> {
+            Dialogs.ForkChatDialog(
+                onConfirm = {
+                    viewModel.forkChat(dialogState.chatId)
+                    viewModel.dismissDialog()
+                },
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.NewFolder -> {
+            Dialogs.NewFolderDialog(
+                onConfirm = { name ->
+                    viewModel.createFolder(name)
+                    viewModel.dismissDialog()
+                },
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.NewChat -> {
+            Dialogs.NewChatDialog(
+                onConfirm = { title ->
+                    viewModel.createChat(title)
+                    viewModel.dismissDialog()
+                },
+                onDismiss = viewModel::dismissDialog
+            )
+        }
+        is DialogState.Settings -> {
+            Dialogs.SettingsDialog(
+                state = uiState,
+                onDismiss = viewModel::dismissDialog,
+                onSysPromptChange = viewModel::updateSysPrompt,
+                onTemperatureChange = viewModel::updateTemperature,
+                onTopPChange = viewModel::updateTopP,
+                onTopKChange = viewModel::updateTopK,
+                onMaxTokensChange = viewModel::updateMaxTokens,
+                onModelPathChange = viewModel::updateModelPath,
+                onThreadChange = viewModel::updateThreadText,
+                onContextChange = viewModel::updateContextText,
+                onGpuChange = viewModel::updateGpuText,
+                onUseVulkanChange = viewModel::updateUseVulkan,
+                onLoadModel = viewModel::loadModelFromInputs,
+                onUnloadModel = viewModel::unloadModel,
+                onSelectManifest = viewModel::activateManifest,
+                onDeleteManifest = viewModel::deleteManifest,
+                onTemplateSelect = viewModel::updateTemplate
+            )
+        }
     }
 }

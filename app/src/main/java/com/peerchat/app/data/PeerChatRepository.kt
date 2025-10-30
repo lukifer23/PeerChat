@@ -12,6 +12,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 
+/**
+ * Result wrapper for operations that may succeed or fail.
+ */
+sealed class OperationResult<out T> {
+    data class Success<T>(val data: T, val message: String = "Success") : OperationResult<T>()
+    data class Failure(val error: String) : OperationResult<Nothing>()
+}
+
 class PeerChatRepository(private val database: PeerDatabase) {
     fun observeFolders(): Flow<List<Folder>> = database.folderDao().observeAll()
 
@@ -122,6 +130,97 @@ class PeerChatRepository(private val database: PeerDatabase) {
 
     suspend fun getRecentDocuments(limit: Int): List<Document> = withContext(Dispatchers.IO) {
         database.documentDao().getRecent(limit)
+    }
+
+    // Chat operations with error handling (formerly ChatService)
+    suspend fun createChatResult(
+        title: String,
+        folderId: Long? = null,
+        systemPrompt: String = "",
+        modelId: String = "default"
+    ): OperationResult<Long> = withContext(Dispatchers.IO) {
+        try {
+            val chatId = createChat(
+                title = title.trim().ifEmpty { "New Chat" },
+                folderId = folderId,
+                systemPrompt = systemPrompt,
+                modelId = modelId
+            )
+            OperationResult.Success(chatId, "Chat created")
+        } catch (e: Exception) {
+            OperationResult.Failure("Create error: ${e.message}")
+        }
+    }
+
+    suspend fun renameChatResult(chatId: Long, newTitle: String): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val title = newTitle.trim().ifEmpty { "Untitled" }
+            renameChat(chatId, title)
+            OperationResult.Success(Unit, "Chat renamed")
+        } catch (e: Exception) {
+            OperationResult.Failure("Rename error: ${e.message}")
+        }
+    }
+
+    suspend fun moveChatResult(chatId: Long, folderId: Long?): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            moveChat(chatId, folderId)
+            OperationResult.Success(Unit, "Chat moved")
+        } catch (e: Exception) {
+            OperationResult.Failure("Move error: ${e.message}")
+        }
+    }
+
+    suspend fun forkChatResult(chatId: Long): OperationResult<Long> = withContext(Dispatchers.IO) {
+        try {
+            val base = getChat(chatId)
+                ?: return@withContext OperationResult.Failure("Chat not found")
+
+            val newChatId = createChat(
+                title = base.title + " (copy)",
+                folderId = base.folderId,
+                systemPrompt = base.systemPrompt,
+                modelId = base.modelId
+            )
+
+            // Copy all messages
+            val messages = listMessages(chatId)
+            messages.forEach { message ->
+                insertMessage(
+                    message.copy(
+                        id = 0,
+                        chatId = newChatId,
+                        createdAt = System.currentTimeMillis()
+                    )
+                )
+            }
+
+            OperationResult.Success(newChatId, "Chat forked")
+        } catch (e: Exception) {
+            OperationResult.Failure("Fork error: ${e.message}")
+        }
+    }
+
+    suspend fun deleteChatResult(chatId: Long): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            deleteChat(chatId)
+            OperationResult.Success(Unit, "Chat deleted")
+        } catch (e: Exception) {
+            OperationResult.Failure("Delete error: ${e.message}")
+        }
+    }
+
+    suspend fun updateChatSettingsResult(
+        chatId: Long,
+        systemPrompt: String? = null,
+        modelId: String? = null
+    ): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            updateChatSettings(chatId, systemPrompt, modelId)
+            OperationResult.Success(Unit, "Settings updated")
+        } catch (e: Exception) {
+            OperationResult.Failure("Update error: ${e.message}")
+        }
     }
 
     companion object {

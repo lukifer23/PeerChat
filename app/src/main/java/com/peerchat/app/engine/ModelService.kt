@@ -6,6 +6,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import com.peerchat.app.data.OperationResult
 import com.peerchat.app.engine.ModelStorage.importModel
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineRuntime
@@ -26,22 +27,11 @@ class ModelService(
 ) {
     private val appContext = context.applicationContext as Application
 
-    data class LoadResult(
-        val success: Boolean,
-        val message: String,
-        val manifest: ModelManifest? = null
-    )
-
-    data class ImportResult(
-        val success: Boolean,
-        val message: String,
-        val manifest: ModelManifest? = null
-    )
 
     /**
      * Load a model with the given configuration.
      */
-    suspend fun loadModel(config: StoredEngineConfig): LoadResult = withContext(Dispatchers.IO) {
+    suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         try {
             // Unload any existing model
             unloadModelInternal()
@@ -56,18 +46,20 @@ class ModelService(
                 val manifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
                 val updatedManifest = manifest?.let { manifestService.refreshManifest(it) }
 
-                LoadResult(
-                    success = true,
-                    message = "Model loaded successfully",
-                    manifest = updatedManifest ?: manifest
-                )
+                val finalManifest = updatedManifest ?: manifest
+                if (finalManifest != null) {
+                    val result: OperationResult<ModelManifest> = OperationResult.Success(finalManifest, "Model loaded successfully")
+                result
+                } else {
+                    OperationResult.Failure("Model loaded but manifest not found")
+                }
             } else {
                 ModelConfigStore.clear(appContext)
-                LoadResult(success = false, message = "Failed to load model")
+                OperationResult.Failure("Failed to load model")
             }
         } catch (e: Exception) {
             ModelConfigStore.clear(appContext)
-            LoadResult(success = false, message = "Error loading model: ${e.message}")
+            OperationResult.Failure("Error loading model: ${e.message}")
         }
     }
 
@@ -87,11 +79,11 @@ class ModelService(
     /**
      * Import a model from a URI.
      */
-    suspend fun importModel(uri: Uri): ImportResult = withContext(Dispatchers.IO) {
+    suspend fun importModel(uri: Uri): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         try {
             val path = importModel(appContext, uri)
             if (path.isNullOrEmpty()) {
-                return@withContext ImportResult(success = false, message = "Import failed")
+                return@withContext OperationResult.Failure("Import failed")
             }
 
             // Create/update manifest
@@ -100,13 +92,9 @@ class ModelService(
             val manifests = manifestService.list()
             val manifest = manifests.firstOrNull { it.filePath == path }
 
-            ImportResult(
-                success = true,
-                message = "Model imported successfully",
-                manifest = manifest
-            )
+            OperationResult.Success(manifest!!, "Model imported successfully")
         } catch (e: Exception) {
-            ImportResult(success = false, message = "Import error: ${e.message}")
+            OperationResult.Failure("Import error: ${e.message}")
         }
     }
 
@@ -132,7 +120,7 @@ class ModelService(
     /**
      * Activate a model manifest by setting it as the active configuration.
      */
-    suspend fun activateManifest(manifest: ModelManifest): LoadResult {
+    suspend fun activateManifest(manifest: ModelManifest): OperationResult<ModelManifest> {
         val storedConfig = ModelConfigStore.load(appContext)
         val config = StoredEngineConfig(
             modelPath = manifest.filePath,

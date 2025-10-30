@@ -14,6 +14,20 @@ data class TemplateOption(
     val stopSequences: List<String>,
 )
 
+/**
+ * Unified dialog state management to replace multiple mutableStateOf calls
+ */
+sealed class DialogState {
+    data object None : DialogState()
+    data object Settings : DialogState()
+    data object Models : DialogState()
+    data object NewFolder : DialogState()
+    data object NewChat : DialogState()
+    data class RenameChat(val chatId: Long, val currentTitle: String) : DialogState()
+    data class MoveChat(val chatId: Long) : DialogState()
+    data class ForkChat(val chatId: Long) : DialogState()
+}
+
 data class HomeUiState(
     val folders: List<Folder> = emptyList(),
     val chats: List<Chat> = emptyList(),
@@ -41,5 +55,6 @@ data class HomeUiState(
     val selectedTemplateId: String? = null,
     val detectedTemplateId: String? = null,
     val indexing: Boolean = false,
-    val importingModel: Boolean = false
+    val importingModel: Boolean = false,
+    val dialogState: DialogState = DialogState.None
 )

@@ -53,7 +53,7 @@ class SearchService(private val repository: PeerChatRepository) {
                     type = SearchResultType.DOCUMENT_CHUNK,
                     title = "Document",
                     content = chunk.text.take(200) + if (chunk.text.length > 200) "..." else "",
-                    documentId = chunk.documentId,
+                    documentId = chunk.docId,
                     chunkId = chunk.id
                 )
             }

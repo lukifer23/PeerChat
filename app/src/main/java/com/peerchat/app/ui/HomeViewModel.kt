@@ -49,7 +49,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     // Services from registry
     private val modelService = ServiceRegistry.modelService
     private val documentService = ServiceRegistry.documentService
-    private val chatService = ServiceRegistry.chatService
     private val searchService = ServiceRegistry.searchService
 
     // Direct repository access for fine-grained DB operations
@@ -340,50 +339,60 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createChat(name: String) {
         viewModelScope.launch {
-            val result = chatService.createChat(
+            val result = repository.createChatResult(
                 title = name,
                 folderId = selectedFolderId.value,
                 systemPrompt = _uiState.value.sysPrompt,
                 modelId = _uiState.value.storedConfig?.modelPath ?: "default"
             )
-            if (result.success && result.chatId != null) {
-                activeChatId.value = result.chatId
-                _uiState.update { it.copy(activeChatId = result.chatId) }
-                loadChatSettings(result.chatId)
+            when (result) {
+                is OperationResult.Success -> {
+                    activeChatId.value = result.data
+                    _uiState.update { it.copy(activeChatId = result.data) }
+                    loadChatSettings(result.data)
+                    _events.emit(HomeEvent.Toast(result.message))
+                }
+                is OperationResult.Failure -> {
+                    _events.emit(HomeEvent.Toast(result.error))
+                }
             }
-            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun renameChat(chatId: Long, title: String) {
         viewModelScope.launch {
-            val result = chatService.renameChat(chatId, title)
+            val result = repository.renameChatResult(chatId, title)
             _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun moveChat(chatId: Long, folderId: Long?) {
         viewModelScope.launch {
-            val result = chatService.moveChat(chatId, folderId)
+            val result = repository.moveChatResult(chatId, folderId)
             _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun forkChat(chatId: Long) {
         viewModelScope.launch {
-            val result = chatService.forkChat(chatId)
-            if (result.success && result.chatId != null) {
-                activeChatId.value = result.chatId
-                _uiState.update { it.copy(activeChatId = result.chatId) }
-                loadChatSettings(result.chatId)
+            val result = repository.forkChatResult(chatId)
+            when (result) {
+                is OperationResult.Success -> {
+                    activeChatId.value = result.data
+                    _uiState.update { it.copy(activeChatId = result.data) }
+                    loadChatSettings(result.data)
+                    _events.emit(HomeEvent.Toast(result.message))
+                }
+                is OperationResult.Failure -> {
+                    _events.emit(HomeEvent.Toast(result.error))
+                }
             }
-            _events.emit(HomeEvent.Toast(result.message))
         }
     }
 
     fun deleteChat(chatId: Long) {
         viewModelScope.launch {
-            val result = chatService.deleteChat(chatId)
+            val result = repository.deleteChatResult(chatId)
             _events.emit(HomeEvent.Toast(result.message))
         }
     }
@@ -525,12 +534,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun importDocument(uri: Uri) {
         viewModelScope.launch {
             _uiState.update { it.copy(indexing = true) }
-            try {
-                val result = documentService.importDocument(uri)
-                _events.emit(HomeEvent.Toast(result.message))
-            } finally {
-                _uiState.update { it.copy(indexing = false) }
+            val result = documentService.importDocument(uri)
+            when (result) {
+                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
+                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
             }
+            _uiState.update { it.copy(indexing = false) }
         }
     }
 
@@ -637,6 +646,34 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    fun showNewChatDialog() {
+        _uiState.update { it.copy(dialogState = DialogState.NewChat) }
+    }
+
+    fun showSettingsDialog() {
+        _uiState.update { it.copy(dialogState = DialogState.Settings) }
+    }
+
+    fun showNewFolderDialog() {
+        _uiState.update { it.copy(dialogState = DialogState.NewFolder) }
+    }
+
+    fun showRenameChatDialog(chatId: Long, currentTitle: String) {
+        _uiState.update { it.copy(dialogState = DialogState.RenameChat(chatId, currentTitle)) }
+    }
+
+    fun showMoveChatDialog(chatId: Long) {
+        _uiState.update { it.copy(dialogState = DialogState.MoveChat(chatId)) }
+    }
+
+    fun showForkChatDialog(chatId: Long) {
+        _uiState.update { it.copy(dialogState = DialogState.ForkChat(chatId)) }
+    }
+
+    fun dismissDialog() {
+        _uiState.update { it.copy(dialogState = DialogState.None) }
     }
 
 }

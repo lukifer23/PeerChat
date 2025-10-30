@@ -9,6 +9,10 @@ import java.security.MessageDigest
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 object RagService {
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {

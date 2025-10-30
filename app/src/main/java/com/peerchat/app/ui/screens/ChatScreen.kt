@@ -19,7 +19,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Row
 import com.peerchat.app.ui.components.MessageBubble
 import com.peerchat.app.ui.components.PerformanceMetrics
 import com.peerchat.app.ui.components.StreamingMessageBubble
@@ -81,8 +84,8 @@ fun ChatScreen(
         }
         metricsState?.let { metric ->
             PerformanceMetrics(
-                ttfsMs = metric.ttfsMs,
-                tps = metric.tps
+                ttfsMs = metric.ttfsMs.toFloat(),
+                tps = metric.tps.toFloat()
             )
         }
         Row(
