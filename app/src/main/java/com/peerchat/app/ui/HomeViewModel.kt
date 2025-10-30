@@ -128,25 +128,39 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private fun observeSearch() {
         viewModelScope.launch {
             searchQuery
-                .debounce(200)
+                .debounce(300) // Increased debounce for better performance
                 .distinctUntilChanged()
                 .collectLatest { query ->
+                    // Cancel any previous search
+                    searchJob?.cancel()
+
                     val trimmed = query.trim()
-                    val results = if (trimmed.isEmpty()) {
-                        emptyList()
+                    if (trimmed.isEmpty()) {
+                        _uiState.update { it.copy(searchQuery = query, searchResults = emptyList()) }
                     } else {
-                        searchService.search(trimmed, 50)
-                            .map { result ->
-                                when (result.type) {
-                                    com.peerchat.app.engine.SearchService.SearchResultType.MESSAGE ->
-                                        "Msg:#${result.chatId ?: 0}: ${result.content}"
-                                    com.peerchat.app.engine.SearchService.SearchResultType.DOCUMENT_CHUNK ->
-                                        "Doc: ${result.content}"
-                                }
-                            }
+                        // Start new search job
+                        searchJob = launch {
+                            val results = performSearch(trimmed)
+                            _uiState.update { it.copy(searchQuery = query, searchResults = results) }
+                        }
                     }
-                    _uiState.update { it.copy(searchQuery = query, searchResults = results) }
                 }
+        }
+    }
+
+    private suspend fun performSearch(query: String): List<String> {
+        return try {
+            searchService.search(query, 50)
+                .map { result ->
+                    when (result.type) {
+                        com.peerchat.app.engine.SearchService.SearchResultType.MESSAGE ->
+                            "Msg:#${result.chatId ?: 0}: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
+                        com.peerchat.app.engine.SearchService.SearchResultType.DOCUMENT_CHUNK ->
+                            "Doc: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
+                    }
+                }
+        } catch (e: Exception) {
+            listOf("Search error: ${e.message}")
         }
     }
 
@@ -154,8 +168,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             activeChatId
                 .flatMapLatest { id ->
-                    if (id == null) kotlinx.coroutines.flow.flowOf(emptyList())
-                    else repository.database().messageDao().observeByChat(id)
+                    if (id == null) {
+                        kotlinx.coroutines.flow.flowOf(emptyList())
+                    } else {
+                        // Lazy load messages - only load last 50 for performance
+                        kotlinx.coroutines.flow.flow {
+                            val messages = repository.listMessages(id)
+                            // Sort by creation time and take last 50
+                            val recentMessages = messages.sortedBy { it.createdAt }.takeLast(50)
+                            emit(recentMessages)
+                        }
+                    }
                 }
                 .collectLatest { msgs ->
                     _uiState.update { it.copy(messages = msgs) }
