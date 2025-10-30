@@ -139,7 +139,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                             .map { result ->
                                 when (result.type) {
                                     com.peerchat.app.engine.SearchService.SearchResultType.MESSAGE ->
-                                        "Msg: ${result.content}"
+                                        "Msg:#${result.chatId ?: 0}: ${result.content}"
                                     com.peerchat.app.engine.SearchService.SearchResultType.DOCUMENT_CHUNK ->
                                         "Doc: ${result.content}"
                                 }

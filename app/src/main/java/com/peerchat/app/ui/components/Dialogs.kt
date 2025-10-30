@@ -18,6 +18,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -25,7 +26,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.work.WorkInfo
-import com.peerchat.app.data.db.ModelManifest
+import com.peerchat.data.db.ModelManifest
 import com.peerchat.app.engine.DefaultModel
 import com.peerchat.app.engine.DefaultModels
 import com.peerchat.app.ui.HomeUiState
@@ -333,7 +334,7 @@ private fun NumericField(
 }
 
 @Composable
-private fun rememberDownloadInfo(model: DefaultModel): WorkInfo? {
+fun rememberDownloadInfo(model: DefaultModel): WorkInfo? {
     val context = LocalContext.current
     val flow = androidx.compose.runtime.remember(model.id) { com.peerchat.app.engine.ModelDownloadManager.observe(context, model) }
     val infos by flow.collectAsState(initial = emptyList())
@@ -341,7 +342,7 @@ private fun rememberDownloadInfo(model: DefaultModel): WorkInfo? {
 }
 
 @Composable
-private fun ModelCatalogRow(
+fun ModelCatalogRow(
     model: DefaultModel,
     manifest: ModelManifest?,
     workInfo: WorkInfo?,
@@ -389,7 +390,7 @@ private fun formatBytes(bytes: Long): String {
     return "${String.format(Locale.US, "%.2f", bytes / Math.pow(1024.0, digitGroups.toDouble()))} ${units[digitGroups]}"
 }
 
-private fun openUrl(context: android.content.Context, url: String) {
+fun openUrl(context: android.content.Context, url: String) {
     runCatching {
         val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
             addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)

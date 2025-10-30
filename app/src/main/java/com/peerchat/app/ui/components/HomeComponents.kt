@@ -100,6 +100,7 @@ fun ColumnScope.HomeListRow(
 fun HomeTopBar(
     docImportInProgress: Boolean,
     modelImportInProgress: Boolean,
+    compact: Boolean = false,
     onNewChat: () -> Unit,
     onImportDoc: () -> Unit,
     onImportModel: () -> Unit,
@@ -114,19 +115,21 @@ fun HomeTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                HomeActionChip(label = "New Chat", onClick = onNewChat)
-                HomeActionChip(
-                    label = if (docImportInProgress) "Importing…" else "Import Doc",
-                    enabled = !docImportInProgress,
-                    onClick = onImportDoc
-                )
-                HomeActionChip(
-                    label = if (modelImportInProgress) "Importing…" else "Import Model",
-                    enabled = !modelImportInProgress,
-                    onClick = onImportModel
-                )
-                HomeActionChip(label = "Documents", onClick = onOpenDocuments)
-                HomeActionChip(label = "Models", onClick = onOpenModels)
+                if (!compact) {
+                    HomeActionChip(label = "New Chat", onClick = onNewChat)
+                    HomeActionChip(
+                        label = if (docImportInProgress) "Importing…" else "Import Doc",
+                        enabled = !docImportInProgress,
+                        onClick = onImportDoc
+                    )
+                    HomeActionChip(
+                        label = if (modelImportInProgress) "Importing…" else "Import Model",
+                        enabled = !modelImportInProgress,
+                        onClick = onImportModel
+                    )
+                    HomeActionChip(label = "Documents", onClick = onOpenDocuments)
+                    HomeActionChip(label = "Models", onClick = onOpenModels)
+                }
                 androidx.compose.material3.IconButton(onClick = onOpenSettings) {
                     androidx.compose.material3.Icon(
                         androidx.compose.material.icons.Icons.Default.Settings,
