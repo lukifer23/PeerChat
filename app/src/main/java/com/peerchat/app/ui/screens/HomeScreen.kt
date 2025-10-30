@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ElevatedCard
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,6 +63,15 @@ import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
+import com.peerchat.app.ui.components.StatusRow
+import com.peerchat.app.ui.components.SectionCard
+import com.peerchat.app.ui.components.HomeListRow
+import com.peerchat.app.ui.components.EmptyListHint
+import com.peerchat.app.ui.components.HomeTopBar
+import com.peerchat.app.ui.components.SettingsDialog
+import com.peerchat.app.ui.components.ModelCatalogRow
+import com.peerchat.app.ui.components.rememberDownloadInfo
+import com.peerchat.app.ui.components.openUrl
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import java.io.File
 import java.util.Locale
@@ -122,11 +131,16 @@ fun HomeScreen(
         }
     }
 
+    val configuration = LocalConfiguration.current
+    val screenWidthDp = configuration.screenWidthDp
+    val isTopBarCompact = screenWidthDp < 720
+
     Scaffold(
         topBar = {
             HomeTopBar(
                 docImportInProgress = uiState.indexing,
                 modelImportInProgress = uiState.importingModel,
+                compact = isTopBarCompact,
                 onNewChat = {
                     tempName = TextFieldValue("")
                     showNewChat = true
@@ -220,7 +234,7 @@ fun HomeScreen(
                                     HomeListRow(
                                         title = chat.title,
                                         actions = listOf(
-                                            "Open" to { navController.navigate("chat/${'$'}{chat.id}") },
+                                            "Open" to { navController.navigate("chat/${chat.id}") },
                                             "Rename" to {
                                                 tempName = TextFieldValue(chat.title)
                                                 renameTargetId.value = chat.id
