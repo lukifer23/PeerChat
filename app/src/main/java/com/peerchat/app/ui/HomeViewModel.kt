@@ -350,6 +350,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 activeChatId.value = result.chatId
                 _uiState.update { it.copy(activeChatId = result.chatId) }
                 loadChatSettings(result.chatId)
+                // Notify UI to navigate to the new chat screen explicitly
+                _events.emit(HomeEvent.OpenChat(result.chatId))
             }
             _events.emit(HomeEvent.Toast(result.message))
         }

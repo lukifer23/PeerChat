@@ -102,6 +102,7 @@ fun HomeScreen(
         viewModel.events.collect { event ->
             when (event) {
                 is HomeEvent.Toast -> android.widget.Toast.makeText(context, event.message, android.widget.Toast.LENGTH_SHORT).show()
+                is HomeEvent.OpenChat -> navController.navigate("chat/${event.chatId}")
             }
         }
     }
@@ -267,98 +268,7 @@ fun HomeScreen(
                         }
                     }
                 } else {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .widthIn(max = 360.dp)
-                                .fillMaxHeight(),
-                            verticalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            SectionCard(
-                                title = "Folders",
-                                actionLabel = "New",
-                                onAction = {
-                                    tempName = TextFieldValue("")
-                                    showNewFolder = true
-                                }
-                            ) {
-                                if (uiState.folders.isEmpty()) {
-                                    EmptyListHint("No folders yet.")
-                                } else {
-                                    uiState.folders.forEach { folder ->
-                                    HomeListRow(
-                                            title = folder.name,
-                                            subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
-                                        actions = listOf(
-                                            "Open" to { viewModel.selectFolder(folder.id) },
-                                            "Delete" to { showDeleteFolderId = folder.id }
-                                        )
-                                        )
-                                    }
-                                }
-                            }
-                            SectionCard(
-                                title = "Chats",
-                                actionLabel = "New",
-                                onAction = {
-                                    tempName = TextFieldValue("")
-                                    showNewChat = true
-                                }
-                            ) {
-                                if (uiState.chats.isEmpty()) {
-                                    EmptyListHint("No chats yet.")
-                                } else {
-                                    uiState.chats.forEach { chat ->
-                                    HomeListRow(
-                                            title = chat.title,
-                                            actions = listOf(
-                                                "Open" to { viewModel.selectChat(chat.id) },
-                                                "Rename" to {
-                                                    tempName = TextFieldValue(chat.title)
-                                                    renameTargetId.value = chat.id
-                                                    showRenameDialog.value = true
-                                                },
-                                                "Move" to {
-                                                    moveTargetId.value = chat.id
-                                                    showMoveDialog.value = true
-                                                },
-                                                "Fork" to {
-                                                    forkTargetId.value = chat.id
-                                                showForkDialog.value = true
-                                            },
-                                            "Delete" to { showDeleteChatId = chat.id }
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        ElevatedCard(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                        ) {
-                            if (uiState.activeChatId != null) {
-                                ChatScreen(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(16.dp),
-                                    enabled = true,
-                                    messages = uiState.messages,
-                                    onSend = { prompt, onToken, onComplete ->
-                                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                                    }
-                                )
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Select a chat or create a new one", style = MaterialTheme.typography.bodyLarge)
-                                }
-                            }
-                        }
-                    }
+                    // Unified to single-column layout; chat opens in dedicated screen
                 }
             }
         }
