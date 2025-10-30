@@ -97,6 +97,9 @@ interface RagDao {
 
     @Query("SELECT * FROM rag_chunks WHERE embeddingId = :embeddingId LIMIT 1")
     suspend fun getByEmbeddingId(embeddingId: Long): RagChunk?
+
+    @Query("SELECT * FROM rag_chunks WHERE embeddingId IN (:embeddingIds)")
+    suspend fun getByEmbeddingIds(embeddingIds: List<Long>): List<RagChunk>
 }
 
 @Dao

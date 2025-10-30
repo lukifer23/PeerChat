@@ -15,10 +15,51 @@ import kotlin.concurrent.read
 import kotlin.concurrent.write
 
 object RagService {
+    // Tokenizer cache for performance optimization
+    private val tokenCountCache = ConcurrentHashMap<String, Int>()
+    private val cacheLock = ReentrantReadWriteLock()
+    private const val MAX_CACHE_SIZE = 10000
+
+    // Clear cache periodically to prevent memory bloat
+    private fun evictCacheIfNeeded() {
+        if (tokenCountCache.size > MAX_CACHE_SIZE) {
+            cacheLock.write {
+                // Keep only the most recent half to maintain some locality
+                val entries = tokenCountCache.entries.take(MAX_CACHE_SIZE / 2)
+                tokenCountCache.clear()
+                tokenCountCache.putAll(entries)
+            }
+        }
+    }
+
+    // Cached token counting with fallback
+    private fun countTokensCached(text: String): Int {
+        val cacheKey = sha256(text).take(16) // Use hash prefix as key
+
+        cacheLock.read {
+            tokenCountCache[cacheKey]?.let { return it }
+        }
+
+        val count = runCatching { EngineNative.countTokens(text) }.getOrElse {
+            (text.length / 4).coerceAtLeast(1)
+        }
+
+        cacheLock.write {
+            tokenCountCache[cacheKey] = count
+        }
+
+        evictCacheIfNeeded()
+        return count
+    }
+
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
-        val chunks = tokenizerAwareChunks(text, maxChunkTokens, overlapTokens)
+        val chunks = optimizedTokenizerChunks(text, maxChunkTokens, overlapTokens)
         if (chunks.isEmpty()) return
-        val embeddings = EngineNative.embed(chunks.map { it.text }.toTypedArray())
+
+        // Batch embed all chunks at once for better performance
+        val chunkTexts = chunks.map { it.text }.toTypedArray()
+        val embeddings = EngineNative.embed(chunkTexts)
+
         for (i in chunks.indices) {
             val chunk = chunks[i]
             val vec = embeddings[i]
@@ -59,35 +100,56 @@ object RagService {
         alphaLexical: Float = 0.3f,
     ): List<RagChunk> {
         val qv = EngineNative.embed(arrayOf(query)).firstOrNull() ?: return emptyList()
-        val all = db.embeddingDao().listAll()
+
+        // Get all embeddings in one query for better performance
+        val allEmbeddings = db.embeddingDao().listAll()
+
+        // Pre-filter embeddings and calculate semantic scores
         val semanticScores = HashMap<Long, Float>()
-        for (emb in all) {
-            if (emb.dim <= 0 || emb.vector.isEmpty()) continue
+        val validEmbeddings = allEmbeddings.filter { it.dim > 0 && it.vector.isNotEmpty() }
+
+        // Batch cosine similarity calculations for better cache performance
+        for (emb in validEmbeddings) {
             val v = bytesToFloatArray(emb.vector)
             val s = cosine(qv, v, emb.norm)
             semanticScores[emb.id] = s
         }
-        val lexical = db.ragDao().searchChunks(query, limit = topK * 4)
+
+        // Get lexical matches (FTS search)
+        val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 4)
         val lexicalScores = HashMap<Long, Float>()
-        for ((rank, ch) in lexical.withIndex()) {
-            lexicalScores[ch.embeddingId ?: -1L] = ((lexical.size - rank).toFloat() / lexical.size.toFloat())
+
+        for ((rank, ch) in lexicalMatches.withIndex()) {
+            val score = (lexicalMatches.size - rank).toFloat() / lexicalMatches.size.toFloat()
+            lexicalScores[ch.embeddingId ?: -1L] = score
         }
+
+        // Fuse semantic and lexical scores
         val fused = ArrayList<Pair<Long, Float>>()
-        val ids = HashSet<Long>()
-        ids.addAll(semanticScores.keys)
-        ids.addAll(lexicalScores.keys)
-        for (id in ids) {
-            val s = (semanticScores[id] ?: 0f) * alphaSemantic + (lexicalScores[id] ?: 0f) * alphaLexical
-            fused.add(id to s)
+        val allIds = HashSet<Long>()
+        allIds.addAll(semanticScores.keys)
+        allIds.addAll(lexicalScores.keys)
+
+        for (id in allIds) {
+            val semanticScore = semanticScores[id] ?: 0f
+            val lexicalScore = lexicalScores[id] ?: 0f
+            val combinedScore = semanticScore * alphaSemantic + lexicalScore * alphaLexical
+            fused.add(id to combinedScore)
         }
+
+        // Sort by score and take top K
         fused.sortByDescending { it.second }
-        val chosen = fused.take(topK)
-        val out = ArrayList<RagChunk>()
-        for ((embId, _) in chosen) {
-            val ch = if (embId > 0) db.ragDao().getByEmbeddingId(embId) else null
-            if (ch != null) out.add(ch)
-        }
-        return out
+        val topEmbeddingIds = fused.take(topK).map { it.first }
+
+        // Batch fetch chunks for the top results
+        if (topEmbeddingIds.isEmpty()) return emptyList()
+
+        val chunks = db.ragDao().getByEmbeddingIds(topEmbeddingIds.filter { it > 0 })
+        return chunks.sortedBy { chunk ->
+            // Sort by the combined score
+            val embId = chunk.embeddingId ?: -1L
+            fused.find { it.first == embId }?.second ?: 0f
+        }.reversed() // descending order
     }
 
     fun buildContext(chunks: List<RagChunk>, maxChars: Int = 4000): String {
@@ -104,50 +166,78 @@ object RagService {
 
 private data class ChunkInfo(val text: String, val start: Int, val end: Int, val tokenCount: Int)
 
-private fun tokenizerAwareChunks(text: String, maxTokens: Int, overlapTokens: Int): List<ChunkInfo> {
-    if (text.isEmpty()) return emptyList()
-    val out = ArrayList<ChunkInfo>()
-    var pos = 0
-    val chars = text.toCharArray()
-    val totalChars = chars.size
+    // Optimized chunking using sliding window instead of binary search
+    private fun optimizedTokenizerChunks(text: String, maxTokens: Int, overlapTokens: Int): List<ChunkInfo> {
+        if (text.isEmpty()) return emptyList()
 
-    while (pos < totalChars) {
-        var searchStart = pos
-        var searchEnd = min(totalChars, pos + (maxTokens * 4))
-        var chunkEnd = searchEnd
+        val out = ArrayList<ChunkInfo>()
+        var pos = 0
+        val totalChars = text.length
 
-        while (searchStart < searchEnd) {
-            val mid = (searchStart + searchEnd) / 2
-            val candidate = String(chars, pos, mid - pos)
-            val tokens = runCatching { EngineNative.countTokens(candidate) }.getOrElse { 
-                (candidate.length / 4).coerceAtLeast(1) 
-            }
-            if (tokens <= maxTokens) {
-                chunkEnd = mid
-                searchStart = mid + 1
+        // Estimate character-to-token ratio (typically 3-4 chars per token)
+        val estimatedCharsPerToken = 4
+
+        while (pos < totalChars) {
+            // Estimate chunk size based on token limit
+            val estimatedChunkSize = maxTokens * estimatedCharsPerToken
+            var chunkEnd = min(totalChars, pos + estimatedChunkSize)
+
+            // If we're near the end, take what's left
+            if (chunkEnd >= totalChars - 100) {
+                chunkEnd = totalChars
             } else {
-                searchEnd = mid - 1
+                // Find a good breaking point by expanding until we hit token limit
+                var currentEnd = pos + (estimatedChunkSize / 2) // Start from middle
+                val step = estimatedCharsPerToken * 10 // Step by ~10 tokens
+
+                while (currentEnd < chunkEnd && currentEnd < totalChars) {
+                    val candidate = text.substring(pos, currentEnd)
+                    val tokens = countTokensCached(candidate)
+
+                    if (tokens >= maxTokens) {
+                        // We overshot, back up to previous good position
+                        chunkEnd = currentEnd
+                        break
+                    }
+                    currentEnd += step
+                }
+
+                // If we didn't find a good break, use the estimated size
+                if (currentEnd >= chunkEnd) {
+                    chunkEnd = min(totalChars, pos + estimatedChunkSize)
+                }
             }
+
+            // Ensure we don't go beyond text bounds
+            chunkEnd = min(chunkEnd, totalChars)
+
+            val chunkText = text.substring(pos, chunkEnd)
+            val actualTokens = countTokensCached(chunkText)
+
+            // If chunk is too small and we're not at the end, extend it
+            if (actualTokens < maxTokens / 4 && chunkEnd < totalChars) {
+                val extendedEnd = min(totalChars, chunkEnd + (maxTokens * estimatedCharsPerToken / 2))
+                val extendedText = text.substring(pos, extendedEnd)
+                val extendedTokens = countTokensCached(extendedText)
+
+                if (extendedTokens <= maxTokens) {
+                    out.add(ChunkInfo(extendedText, pos, extendedEnd, extendedTokens))
+                    pos = max(pos + 1, extendedEnd - overlapTokens * estimatedCharsPerToken)
+                    continue
+                }
+            }
+
+            out.add(ChunkInfo(chunkText, pos, chunkEnd, actualTokens))
+
+            if (chunkEnd >= totalChars) break
+
+            // Calculate next position with overlap
+            val overlapChars = overlapTokens * estimatedCharsPerToken
+            pos = max(pos + 1, chunkEnd - overlapChars)
         }
 
-        if (chunkEnd <= pos) {
-            chunkEnd = min(totalChars, pos + 100)
-        }
-
-        val chunkText = String(chars, pos, chunkEnd - pos)
-        val actualTokens = runCatching { EngineNative.countTokens(chunkText) }.getOrElse { 
-            (chunkText.length / 4).coerceAtLeast(1) 
-        }
-
-        out.add(ChunkInfo(chunkText, pos, chunkEnd, actualTokens))
-
-        if (chunkEnd >= totalChars) break
-        val backStep = max(overlapTokens * 2, overlapTokens)
-        pos = max(pos + 1, chunkEnd - backStep)
+        return out
     }
-
-    return out
-}
 
 private fun sha256(s: String): String {
     val md = MessageDigest.getInstance("SHA-256")

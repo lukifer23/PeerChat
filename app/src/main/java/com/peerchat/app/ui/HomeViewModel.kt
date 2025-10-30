@@ -74,6 +74,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val selectedFolderId = MutableStateFlow<Long?>(null)
     private val activeChatId = MutableStateFlow<Long?>(null)
     private val searchQuery = MutableStateFlow("")
+    private var searchJob: kotlinx.coroutines.Job? = null
 
     init {
         observeFolders()

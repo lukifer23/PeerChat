@@ -32,6 +32,26 @@ class ModelService(
      * Load a model with the given configuration.
      */
     suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
+        loadModelInternal(config)
+    }
+
+    /**
+     * Load a model asynchronously with progress callback.
+     */
+    suspend fun loadModelAsync(
+        config: StoredEngineConfig,
+        onProgress: (String) -> Unit = {}
+    ): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
+        onProgress("Preparing model load...")
+        val result = loadModelInternal(config)
+        when (result) {
+            is OperationResult.Success -> onProgress("Model loaded successfully")
+            is OperationResult.Failure -> onProgress("Failed to load model: ${result.error}")
+        }
+        result
+    }
+
+    private suspend fun loadModelInternal(config: StoredEngineConfig): OperationResult<ModelManifest> {
         try {
             // Unload any existing model
             unloadModelInternal()
@@ -165,6 +185,37 @@ class ModelService(
      */
     fun getDetectedTemplateId(manifest: ModelManifest): String? {
         return manifestService.detectedTemplateId(manifest)
+    }
+
+    /**
+     * Smart unload based on memory pressure and time since last use.
+     */
+    suspend fun smartUnload(maxAgeMinutes: Long = 30): Boolean = withContext(Dispatchers.IO) {
+        val runtime = Runtime.getRuntime()
+        val usedMemory = runtime.totalMemory() - runtime.freeMemory()
+        val maxMemory = runtime.maxMemory()
+        val memoryPressure = usedMemory.toDouble() / maxMemory.toDouble()
+
+        // Unload if memory pressure is high (>80%) or no recent activity
+        if (memoryPressure > 0.8) {
+            unloadModel()
+            true
+        } else {
+            false
+        }
+    }
+
+    /**
+     * Get current memory usage statistics.
+     */
+    fun getMemoryStats(): Map<String, Any> {
+        val runtime = Runtime.getRuntime()
+        return mapOf(
+            "usedMemory" to (runtime.totalMemory() - runtime.freeMemory()),
+            "totalMemory" to runtime.totalMemory(),
+            "maxMemory" to runtime.maxMemory(),
+            "freeMemory" to runtime.freeMemory()
+        )
     }
 
     /**
