@@ -1,21 +1,24 @@
 package com.peerchat.app.ui
 
-import android.app.Application
+import android.content.Context
 import android.net.Uri
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.engine.DocumentService
+import com.peerchat.app.engine.EngineStreamEvent
+import com.peerchat.app.engine.ModelConfigStore
+import com.peerchat.app.engine.ModelRepository
+import com.peerchat.app.engine.ModelService
+import com.peerchat.app.engine.ModelStateCache
+import com.peerchat.app.engine.PromptComposer
+import com.peerchat.app.engine.StoredEngineConfig
+import com.peerchat.app.engine.SearchService
 import com.peerchat.app.ui.DialogState
 import com.peerchat.app.ui.HomeEvent
 import com.peerchat.app.ui.HomeUiState
-import com.peerchat.app.engine.ServiceRegistry
-import com.peerchat.app.engine.EngineStreamEvent
-import com.peerchat.app.engine.ModelConfigStore
-import com.peerchat.app.engine.StreamingEngine
-import com.peerchat.app.engine.StoredEngineConfig
-import com.peerchat.app.engine.PromptComposer
-import com.peerchat.app.engine.ModelStateCache
+import com.peerchat.app.ui.stream.ReasoningParser
 import com.peerchat.app.util.optFloatOrNull
 import com.peerchat.app.util.optIntOrNull
 import com.peerchat.app.util.optStringOrNull
@@ -23,8 +26,10 @@ import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 import com.peerchat.templates.TemplateCatalog
-import com.peerchat.app.docs.OcrService
+import com.peerchat.rag.Retriever
 import com.peerchat.rag.RagService
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -46,22 +51,21 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import javax.inject.Inject
 
 @OptIn(FlowPreview::class)
-class HomeViewModel(application: Application) : AndroidViewModel(application) {
-    private val appContext = application.applicationContext
-
-    // Services from registry
-    private val modelService = ServiceRegistry.modelService
-    private val modelRepository = ServiceRegistry.modelRepository
-    private val documentService = ServiceRegistry.documentService
-    private val searchService = ServiceRegistry.searchService
-
-    // Direct repository access for fine-grained DB operations
-    private val repository: PeerChatRepository = PeerChatRepository.from(appContext)
-
-    // Cache model KV state per chat to enable fast context restore
-    private val modelCache = ModelStateCache(appContext)
+@HiltViewModel
+class HomeViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val repository: PeerChatRepository,
+    private val modelService: ModelService,
+    private val modelRepository: ModelRepository,
+    private val documentService: DocumentService,
+    private val searchService: SearchService,
+    private val modelCache: ModelStateCache,
+    private val promptComposer: PromptComposer,
+    private val retriever: Retriever
+) : ViewModel() {
 
     // Memoization cache for expensive operations
     private val memoizationCache = mutableMapOf<String, Pair<Long, Any>>()
@@ -120,6 +124,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         observeEngine()
         observeManifests()
         observeMessages()
+        observeCacheStats()
         restoreModelConfig()
     }
 
@@ -190,9 +195,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             searchService.search(query, 50)
                 .map { result ->
                     when (result.type) {
-                        com.peerchat.app.engine.SearchService.SearchResultType.MESSAGE ->
+                        SearchService.SearchResultType.MESSAGE ->
                             "Msg:#${result.chatId ?: 0}: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
-                        com.peerchat.app.engine.SearchService.SearchResultType.DOCUMENT_CHUNK ->
+                        SearchService.SearchResultType.DOCUMENT_CHUNK ->
                             "Doc: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
                     }
                 }
@@ -220,6 +225,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 .collectLatest { msgs ->
                     _uiState.update { it.copy(messages = msgs) }
                 }
+        }
+    }
+
+    private fun observeCacheStats() {
+        viewModelScope.launch {
+            modelCache.stats().collectLatest { stats ->
+                _uiState.update { it.copy(cacheStats = stats) }
+            }
         }
     }
 
@@ -670,7 +683,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
                 // RAG retrieval with error recovery
                 val retrieved = runCatching {
-                    ServiceRegistry.ragRetriever.retrieve(repository.database(), prompt, topK = 6)
+                    retriever.retrieve(repository.database(), prompt, topK = 6)
                 }.getOrDefault(emptyList())
 
                 val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
@@ -678,7 +691,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
                 val composition = memoize("prompt_composition_${chatId}_${state.sysPrompt.hashCode()}_${history.size}_${augmented.hashCode()}") {
                     runCatching {
-                        PromptComposer.compose(
+                        promptComposer.compose(
                             PromptComposer.Inputs(
                                 systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
                                 history = history,
@@ -695,10 +708,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
-                val builder = StringBuilder()
-                val reasoningBuilder = StringBuilder()
-                var inReasoningRegion = false
-                var success = false
+                val parser = ReasoningParser(onToken)
 
                 runCatching {
                     modelRepository.streamWithCache(
@@ -713,53 +723,36 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                         stop = composition.prompt.stopSequences.toTypedArray()
                     ).collect { event ->
                         when (event) {
-                            is EngineStreamEvent.Token -> {
-                                val t = event.text
-                                // Detect reasoning regions
-                                if (!inReasoningRegion && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
-                                    inReasoningRegion = true
-                                }
-                                if (inReasoningRegion) {
-                                    reasoningBuilder.append(t)
-                                    if (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>")) {
-                                        inReasoningRegion = false
-                                    }
-                                } else {
-                                    builder.append(t)
-                                    onToken(t)
-                                }
-                            }
+                            is EngineStreamEvent.Token -> parser.handle(event.text)
                             is EngineStreamEvent.Terminal -> {
-                                success = !event.metrics.isError
-                                val finalText = builder.toString()
-                                val reasoningText = reasoningBuilder.toString()
+                                val parseResult = parser.result()
+                                val finalText = parseResult.visible
+                                val reasoningText = parseResult.reasoning
                                 onComplete(finalText, event.metrics)
 
-                                // Save assistant message with error recovery
                                 runCatching {
-                                    val meta = runCatching { JSONObject(event.metrics.rawJson) }.getOrElse { JSONObject() }
-                                    meta.put("templateId", composition.template.id)
-                                    if (reasoningText.isNotBlank()) {
-                                        meta.put("reasoning", reasoningText)
-                                    }
                                     repository.insertMessage(
                                         com.peerchat.data.db.Message(
                                             chatId = chatId,
                                             role = "assistant",
                                             contentMarkdown = finalText,
-                                            tokens = 0,
+                                            tokens = event.metrics.generationTokens,
                                             ttfsMs = event.metrics.ttfsMs.toLong(),
                                             tps = event.metrics.tps.toFloat(),
                                             contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
                                             createdAt = System.currentTimeMillis(),
-                                            metaJson = meta.toString()
+                                            metaJson = buildAssistantMeta(
+                                                templateId = composition.template.id,
+                                                metrics = event.metrics,
+                                                reasoning = reasoningText.takeIf { it.isNotBlank() },
+                                                reasoningDurationMs = parseResult.reasoningDurationMs,
+                                                reasoningChars = parseResult.reasoningChars
+                                            )
                                         )
                                     )
                                 }.onFailure { e ->
                                     _events.emit(HomeEvent.Toast("Failed to save response: ${e.message}"))
                                 }
-
-                                // KV cache handled by repository
                             }
                         }
                     }
@@ -781,6 +774,32 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         // Store the job reference (outside the launch block)
         activeSendJobs[chatId] = job
+    }
+
+    private fun buildAssistantMeta(
+        templateId: String,
+        metrics: EngineMetrics,
+        reasoning: String?,
+        reasoningDurationMs: Long?,
+        reasoningChars: Int
+    ): String {
+        val metricsJson = JSONObject().apply {
+            put("promptTokens", metrics.promptTokens)
+            put("generationTokens", metrics.generationTokens)
+            put("ttfsMs", metrics.ttfsMs)
+            put("tps", metrics.tps)
+            put("contextUsedPct", metrics.contextUsedPct)
+            put("stopReason", metrics.stopReason)
+            put("stopSequence", metrics.stopSequence)
+            put("truncated", metrics.truncated)
+            put("reasoningChars", reasoningChars)
+            reasoningDurationMs?.let { put("reasoningDurationMs", it) }
+        }
+        return JSONObject().apply {
+            put("templateId", templateId)
+            put("metrics", metricsJson)
+            reasoning?.let { put("reasoning", it) }
+        }.toString()
     }
 
     fun showNewChatDialog() {

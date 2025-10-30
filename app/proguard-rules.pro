@@ -22,6 +22,10 @@
 -keep class * extends androidx.room.RoomDatabase
 -keep @androidx.room.Entity class *
 -dontwarn androidx.room.paging.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+-dontwarn com.gemalto.jp2.**
 
 # ML Kit optimizations
 -dontwarn com.google.mlkit.**
@@ -33,4 +37,3 @@
 -dontpreverify
 -repackageclasses ''
 -verbose
-

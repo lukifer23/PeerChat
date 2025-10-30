@@ -1,0 +1,3 @@
+-keep class com.peerchat.data.db.** { *; }
+-keep interface com.peerchat.data.db.** { *; }
+-dontwarn com.peerchat.data.db.**

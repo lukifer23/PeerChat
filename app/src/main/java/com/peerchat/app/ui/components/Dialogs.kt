@@ -138,6 +138,19 @@ fun SettingsDialog(
                     Button(onClick = onLoadModel, enabled = state.modelPath.isNotBlank()) { Text("Load Model") }
                     Button(onClick = onUnloadModel, enabled = state.storedConfig != null) { Text("Unload") }
                 }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("KV Cache", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Hits ${state.cacheStats.hits} • Misses ${state.cacheStats.misses} • Evictions ${state.cacheStats.evictions}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Disk usage ${formatBytes(state.cacheStats.bytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 HorizontalDivider()
                 Text("Available Models", style = MaterialTheme.typography.titleMedium)
                 if (state.manifests.isEmpty()) {

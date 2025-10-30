@@ -1,0 +1,2 @@
+-keep class com.peerchat.templates.** { *; }
+-dontwarn com.peerchat.templates.**

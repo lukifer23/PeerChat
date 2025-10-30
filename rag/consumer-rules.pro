@@ -1,0 +1,2 @@
+-keep class com.peerchat.rag.** { *; }
+-dontwarn com.peerchat.rag.**

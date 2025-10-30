@@ -1,0 +1,2 @@
+-keep class com.peerchat.engine.** { *; }
+-dontwarn com.peerchat.engine.**

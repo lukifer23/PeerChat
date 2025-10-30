@@ -19,21 +19,18 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.peerchat.app.engine.ServiceRegistry
-import com.peerchat.data.db.Document
-import kotlinx.coroutines.launch
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.peerchat.app.ui.DocumentViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DocumentsScreen(onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    val repository = com.peerchat.app.data.PeerChatRepository.from(androidx.compose.ui.platform.LocalContext.current)
-    val docsFlow = repository.observeDocuments()
-    val documents by docsFlow.collectAsState(initial = emptyList())
-    val docService = ServiceRegistry.documentService
+fun DocumentsScreen(
+    onBack: () -> Unit,
+    viewModel: DocumentViewModel = hiltViewModel()
+) {
+    val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
         topBar = {
@@ -52,10 +49,16 @@ fun DocumentsScreen(onBack: () -> Unit) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            if (documents.isEmpty()) {
-                item { Text("No documents yet.") }
+            if (uiState.documents.isEmpty()) {
+                item {
+                    if (uiState.isIndexing) {
+                        Text("Indexing documents…")
+                    } else {
+                        Text("No documents yet.")
+                    }
+                }
             } else {
-                items(documents) { doc: Document ->
+                items(uiState.documents) { doc ->
                     Text(doc.title, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
                     Text(
                         doc.mime + " • " + (doc.textBytes.size) + " bytes",
@@ -64,11 +67,10 @@ fun DocumentsScreen(onBack: () -> Unit) {
                     )
                     androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = {
-                            // Re-index
-                            scope.launch { docService.reindexDocument(doc) }
+                            viewModel.reindexDocument(doc)
                         }) { Text("Re-index") }
                         TextButton(onClick = {
-                            scope.launch { docService.deleteDocument(doc.id) }
+                            viewModel.deleteDocument(doc)
                         }) { Text("Delete") }
                     }
                     HorizontalDivider()

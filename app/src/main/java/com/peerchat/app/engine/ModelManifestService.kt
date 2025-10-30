@@ -12,8 +12,10 @@ import java.io.FileInputStream
 import java.security.MessageDigest
 import kotlin.math.max
 
-class ModelManifestService(private val context: Context) {
-    private val repository = ModelManifestRepository(context)
+class ModelManifestService(
+    private val context: Context,
+    private val repository: ModelManifestRepository = ModelManifestRepository(context)
+) {
 
     fun manifestsFlow(): Flow<List<ModelManifest>> = repository.observeManifests()
 

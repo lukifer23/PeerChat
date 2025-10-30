@@ -1,11 +1,15 @@
 package com.peerchat.app.engine
 
-import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
+import javax.inject.Singleton
 
-class ModelStateCache(private val context: Context) {
-    private val repo: ModelRepository by lazy { ServiceRegistry.modelRepository }
+@Singleton
+class ModelStateCache @Inject constructor(
+    private val repo: ModelRepository
+) {
 
     suspend fun restore(chatId: Long): Boolean = withContext(Dispatchers.IO) { repo.restoreKv(chatId) }
 
@@ -14,4 +18,6 @@ class ModelStateCache(private val context: Context) {
     suspend fun clear(chatId: Long) = withContext(Dispatchers.IO) { repo.clearKv(chatId) }
 
     suspend fun clearAll() = withContext(Dispatchers.IO) { repo.clearAllKv() }
+
+    fun stats(): StateFlow<ModelRepository.CacheStats> = repo.cacheStats
 }

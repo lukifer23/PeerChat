@@ -13,49 +13,34 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
-import com.peerchat.app.data.OperationResult
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.peerchat.app.engine.DefaultModels
 import com.peerchat.app.engine.ModelDownloadManager
-import com.peerchat.app.engine.ServiceRegistry
 import com.peerchat.app.ui.components.EmptyListHint
 import com.peerchat.app.ui.components.ModelCatalogRow
 import com.peerchat.app.ui.components.rememberDownloadInfo
-import com.peerchat.data.db.ModelManifest
-import kotlinx.coroutines.launch
+import com.peerchat.app.ui.ModelViewModel
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(onBack: () -> Unit) {
+fun ModelsScreen(
+    onBack: () -> Unit,
+    viewModel: ModelViewModel = hiltViewModel()
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val modelService = ServiceRegistry.modelService
-    val manifests by modelService.getManifestsFlow().collectAsState(initial = emptyList())
-    val scope = rememberCoroutineScope()
-    val snackbar = remember { SnackbarHostState() }
-    val snackbarMessage = remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
-
-    // Handle snackbar messages
-    val currentMessage = snackbarMessage.value
-    if (currentMessage != null) {
-        androidx.compose.runtime.LaunchedEffect(currentMessage) {
-            snackbar.showSnackbar(currentMessage)
-            snackbarMessage.value = null
-        }
-    }
+    val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
         topBar = {
@@ -68,7 +53,6 @@ fun ModelsScreen(onBack: () -> Unit) {
                 }
             )
         },
-        snackbarHost = { SnackbarHost(hostState = snackbar) }
     ) { inner ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(inner),
@@ -80,23 +64,16 @@ fun ModelsScreen(onBack: () -> Unit) {
             }
             items(DefaultModels.list) { model ->
                 val workInfo = rememberDownloadInfo(model)
-                val manifest = manifests.firstOrNull { java.io.File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true) }
+                val manifest = uiState.manifests.firstOrNull {
+                    File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true)
+                }
                 Column(Modifier.fillMaxWidth()) {
                     ModelCatalogRow(
                         model = model,
                         manifest = manifest,
                         workInfo = workInfo,
                         onDownload = { ModelDownloadManager.enqueue(context, model) },
-                        onActivate = manifest?.let { m -> {
-                            scope.launch {
-                                val result = modelService.activateManifest(m)
-                                val message = when (result) {
-                                    is OperationResult.Success -> result.message
-                                    is OperationResult.Failure -> result.error
-                                }
-                                snackbar.showSnackbar(message)
-                            }
-                        } },
+                        onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
                         onOpenCard = { com.peerchat.app.ui.components.openUrl(context, model.cardUrl) }
                     )
                 }
@@ -105,10 +82,16 @@ fun ModelsScreen(onBack: () -> Unit) {
                 HorizontalDivider()
                 Text("Installed", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
             }
-            if (manifests.isEmpty()) {
-                item { EmptyListHint("No installed models yet.") }
+            if (uiState.manifests.isEmpty()) {
+                item {
+                    when {
+                        uiState.isImporting -> Text("Importing model…")
+                        uiState.isLoading -> Text("Loading model…")
+                        else -> EmptyListHint("No installed models yet.")
+                    }
+                }
             } else {
-                items(manifests) { manifest: ModelManifest ->
+                items(uiState.manifests) { manifest ->
                     Column(Modifier.fillMaxWidth()) {
                         Text(manifest.name, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
                         Text(
@@ -117,28 +100,9 @@ fun ModelsScreen(onBack: () -> Unit) {
                             color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = {
-                                scope.launch {
-                                    val result = modelService.activateManifest(manifest)
-                                    val message = when (result) {
-                                        is OperationResult.Success -> result.message
-                                        is OperationResult.Failure -> result.error
-                                    }
-                                    snackbarMessage.value = message
-                                }
-                            }) { Text("Activate") }
-                            TextButton(onClick = {
-                                scope.launch {
-                                    val ok = modelService.verifyManifest(manifest)
-                                    snackbarMessage.value = if (ok) "Checksum verified" else "File missing"
-                                }
-                            }) { Text("Verify") }
-                            TextButton(onClick = {
-                                scope.launch {
-                                    val msg = modelService.deleteManifest(manifest, removeFile = true)
-                                    snackbarMessage.value = msg
-                                }
-                            }) { Text("Delete") }
+                            TextButton(onClick = { viewModel.activateManifest(manifest) }) { Text("Activate") }
+                            TextButton(onClick = { viewModel.verifyManifest(manifest) }) { Text("Verify") }
+                            TextButton(onClick = { viewModel.deleteManifest(manifest, removeFile = true) }) { Text("Delete") }
                         }
                     }
                 }
