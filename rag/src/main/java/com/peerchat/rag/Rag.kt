@@ -158,7 +158,7 @@ private fun tryAndroidNativeEmbeddings(texts: Array<String>): Array<FloatArray> 
     Log.i("RagService", "Android native embeddings requested but not implemented - returning empty embeddings")
     // TODO: Implement Android native embeddings properly
     // For now, just return empty arrays to avoid crashes during development
-    Array(texts.size) { FloatArray(0) }
+    return Array(texts.size) { FloatArray(0) }
 }
 
 // Android native embedding service (to be injected)
