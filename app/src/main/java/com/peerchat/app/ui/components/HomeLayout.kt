@@ -23,6 +23,7 @@ import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
 import com.peerchat.app.ui.SearchResultItem
 import com.peerchat.app.ui.SearchResultItem.ResultType
+import com.peerchat.app.ui.theme.LocalSpacing
 
 /**
  * Home layout focuses on navigation (folders & chats) with adaptive column/row presentation.
@@ -36,14 +37,15 @@ fun AdaptiveHomeLayout(
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isCompact = maxWidth < 720.dp
+        val spacing = LocalSpacing.current
 
         if (isCompact) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = spacing.large, vertical = spacing.medium)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(spacing.large)
             ) {
                 HomeStatusSection(
                     navController = navController,
@@ -69,8 +71,8 @@ fun AdaptiveHomeLayout(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(horizontal = spacing.large, vertical = spacing.medium),
+                verticalArrangement = Arrangement.spacedBy(spacing.large)
             ) {
                 HomeStatusSection(
                     navController = navController,
@@ -79,7 +81,7 @@ fun AdaptiveHomeLayout(
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalArrangement = Arrangement.spacedBy(spacing.large)
                 ) {
                     FoldersSection(
                         uiState = uiState,
@@ -111,7 +113,8 @@ private fun HomeStatusSection(
     uiState: HomeUiState,
     homeViewModel: HomeViewModel
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    val spacing = LocalSpacing.current
+    Column(verticalArrangement = Arrangement.spacedBy(spacing.large)) {
         StatusRow(
             status = uiState.model.engineStatus,
             metrics = uiState.model.engineMetrics
@@ -123,7 +126,7 @@ private fun HomeStatusSection(
                 onValueChange = homeViewModel::updateSearchQuery,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(horizontal = spacing.medium, vertical = spacing.small),
                 singleLine = true,
                 placeholder = { Text("Search messages and docs…") }
             )
@@ -163,8 +166,12 @@ private fun HomeSearchResultRow(
     result: SearchResultItem,
     onClick: () -> Unit
 ) {
+    val spacing = LocalSpacing.current
     TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(spacing.tiny)
+        ) {
             Text(
                 result.title.ifBlank { result.type.name.lowercase().replaceFirstChar { it.uppercase() } },
                 style = MaterialTheme.typography.bodyMedium

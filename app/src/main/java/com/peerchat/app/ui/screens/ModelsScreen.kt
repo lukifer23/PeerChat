@@ -16,15 +16,17 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -38,6 +40,7 @@ import com.peerchat.app.ui.components.SectionCard
 import com.peerchat.app.ui.components.openUrl
 import com.peerchat.app.ui.components.rememberDownloadInfo
 import com.peerchat.app.ui.components.GlobalToastManager
+import com.peerchat.app.ui.theme.LocalSpacing
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,7 +66,11 @@ fun ModelsScreen(
         }
     }
 
+    val spacing = LocalSpacing.current
+
     Scaffold(
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             TopAppBar(
                 title = { Text("Models") },
@@ -86,15 +93,15 @@ fun ModelsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = spacing.large, vertical = spacing.medium),
+            verticalArrangement = Arrangement.spacedBy(spacing.large)
         ) {
             item {
                 SectionCard(title = "Installed Models") {
                     if (uiState.manifests.isEmpty()) {
                         EmptyListHint("No models installed yet.")
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(spacing.small)) {
                             uiState.manifests.forEach { manifest ->
                                 val isActive = manifest.id == uiState.activeManifestId
                                 val isBusy = manifest.id == uiState.activatingId ||
@@ -111,7 +118,7 @@ fun ModelsScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(spacing.small))
                     Button(
                         onClick = { importLauncher.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) },
                         enabled = !uiState.importInProgress,
@@ -124,7 +131,7 @@ fun ModelsScreen(
 
             item {
                 SectionCard(title = "Default Catalog") {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(spacing.small)) {
                         DefaultModels.list.forEach { defaultModel ->
                             val manifest = uiState.manifests.firstOrNull { manifest ->
                                 File(manifest.filePath).name.equals(defaultModel.suggestedFileName, ignoreCase = true)

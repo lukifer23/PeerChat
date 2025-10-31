@@ -1,8 +1,10 @@
 package com.peerchat.app.ui.screens
 
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LargeFloatingActionButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -13,10 +15,10 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
-import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.compose.material.icons.Icons
@@ -30,6 +32,8 @@ import com.peerchat.app.ui.components.AdaptiveHomeLayout
 import com.peerchat.app.ui.components.GlobalToastManager
 import com.peerchat.app.ui.components.HomeTopBar
 import com.peerchat.app.ui.components.*
+import com.peerchat.app.ui.theme.LocalSpacing
+import kotlinx.coroutines.launch
 
 private const val ROUTE_DOCUMENTS = "documents"
 private const val ROUTE_MODELS = "models"
@@ -83,7 +87,11 @@ fun HomeScreen(
     }
 
 
+    val spacing = LocalSpacing.current
+
     Scaffold(
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             HomeTopBar(
                 onNewChat = {
@@ -95,8 +103,14 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { homeViewModel.showNewChatDialog() }) {
-                Icon(Icons.Default.Add, contentDescription = "New Chat")
+            LargeFloatingActionButton(
+                onClick = { homeViewModel.showNewChatDialog() },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.semantics { contentDescription = "Create new chat" }
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null)
             }
         }
     ) { innerPadding ->
@@ -104,7 +118,9 @@ fun HomeScreen(
             navController = navController,
             uiState = uiState,
             homeViewModel = homeViewModel,
-            modifier = Modifier.padding(innerPadding)
+            modifier = Modifier
+                .padding(innerPadding)
+                .padding(horizontal = spacing.large, vertical = spacing.medium)
         )
     }
 

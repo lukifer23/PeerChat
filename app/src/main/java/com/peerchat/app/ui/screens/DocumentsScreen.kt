@@ -20,6 +20,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -36,6 +38,7 @@ import com.peerchat.app.ui.DocumentViewModel
 import com.peerchat.app.ui.components.EmptyListHint
 import com.peerchat.app.ui.components.InlineLoadingIndicator
 import com.peerchat.app.ui.components.SectionCard
+import com.peerchat.app.ui.theme.LocalSpacing
 import com.peerchat.data.db.Document
 import java.util.Date
 import java.util.Locale
@@ -67,7 +70,11 @@ fun DocumentsScreen(
         }
     }
 
+    val spacing = LocalSpacing.current
+
     Scaffold(
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onBackground,
         topBar = {
             TopAppBar(
                 title = { Text("Documents") },
@@ -88,15 +95,15 @@ fun DocumentsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = spacing.large, vertical = spacing.medium),
+            verticalArrangement = Arrangement.spacedBy(spacing.large)
         ) {
             item {
                 SectionCard(title = "Imported Documents") {
                     if (uiState.documents.isEmpty()) {
                         EmptyListHint("No documents indexed yet.")
                     } else {
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(spacing.small)) {
                             uiState.documents.forEach { document ->
                                 val reindexing = document.id in uiState.reindexingIds
                                 val deleting = document.id in uiState.deletingIds
@@ -110,7 +117,7 @@ fun DocumentsScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(spacing.small))
                     Button(
                         onClick = { importLauncher.launch(arrayOf("application/pdf", "text/*", "image/*")) },
                         enabled = !uiState.importInProgress,
@@ -132,18 +139,19 @@ private fun DocumentRow(
     onReindex: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    val spacing = LocalSpacing.current
     androidx.compose.material3.ElevatedCard {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(spacing.medium),
+            verticalArrangement = Arrangement.spacedBy(spacing.small)
         ) {
             Text(document.title.ifBlank { "Untitled document" })
             Text("Mime: ${document.mime}")
             Text("Added: ${formatDate(document.createdAt)}")
             Text("Size: ${com.peerchat.app.util.FormatUtils.formatBytes(document.textBytes.size.toLong())}")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(spacing.small)) {
                 TextButton(
                     onClick = onReindex,
                     enabled = !isReindexing && !isDeleting

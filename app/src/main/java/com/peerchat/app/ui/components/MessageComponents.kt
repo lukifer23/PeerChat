@@ -9,11 +9,16 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -27,6 +32,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.peerchat.data.db.Message
+import com.peerchat.app.ui.theme.LocalElevations
+import com.peerchat.app.ui.theme.LocalSpacing
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import java.util.regex.Pattern
 
@@ -40,18 +47,19 @@ fun MessageBubble(
     showMetrics: Boolean = false
 ) {
     val clipboard = LocalClipboardManager.current
-    val roleLabel = if (message.role == "user") "You:" else "Assistant:"
-    val messageType = if (message.role == "user") "User message" else "Assistant message"
-    
-    // Parse metrics from metadata
+    val spacing = LocalSpacing.current
+    val elevations = LocalElevations.current
+    val isUser = message.role == "user"
+    val roleLabel = if (isUser) "You" else "Assistant"
+    val messageType = if (isUser) "User message" else "Assistant message"
+
     val metrics = remember(message.metaJson, showMetrics) {
-        if (!showMetrics || message.role == "user") null else {
+        if (!showMetrics || isUser) null else {
             runCatching {
                 val meta = org.json.JSONObject(message.metaJson)
-                val metricsObj = meta.optJSONObject("metrics")
-                metricsObj?.let {
+                meta.optJSONObject("metrics")?.let {
                     Triple(
-                        it.optLong("ttfsMs", 0),
+                        it.optLong("ttfsMs", 0L),
                         it.optDouble("tps", 0.0).toFloat(),
                         it.optDouble("contextUsedPct", 0.0).toFloat()
                     )
@@ -60,92 +68,120 @@ fun MessageBubble(
         }
     }
 
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    val reasoningData by remember(message.metaJson) {
+        derivedStateOf {
+            runCatching {
+                val meta = org.json.JSONObject(message.metaJson)
+                val reasoning = meta.optString("reasoning", "")
+                val reasoningDuration = meta.optLong("reasoningDurationMs", 0)
+                val reasoningChars = meta.optInt("reasoningChars", 0)
+                Triple(reasoning, reasoningDuration, reasoningChars)
+            }.getOrNull() ?: Triple("", 0L, 0)
+        }
+    }
+    val hasReasoning = reasoningData.first.isNotBlank()
+
+    val bubbleColor = if (isUser) {
+        MaterialTheme.colorScheme.secondaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceColorAtElevation(elevations.level1)
+    }
+    val bubbleContentColor = if (isUser) {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    val semanticsModifier = Modifier.semantics {
+        contentDescription = "$messageType: ${message.contentMarkdown.take(100)}${if (message.contentMarkdown.length > 100) "..." else ""}"
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = spacing.tiny),
+        shape = if (isUser) MaterialTheme.shapes.large else MaterialTheme.shapes.medium,
+        tonalElevation = if (isUser) 0.dp else elevations.level1,
+        color = bubbleColor,
+        contentColor = bubbleContentColor
+    ) {
         Column(
             modifier = Modifier
-                .weight(1f)
-                .semantics {
-                    contentDescription = "$messageType: ${message.contentMarkdown.take(100)}${if (message.contentMarkdown.length > 100) "..." else ""}"
-                }
+                .fillMaxWidth()
+                .padding(horizontal = spacing.medium, vertical = spacing.small)
+                .then(semanticsModifier),
+            verticalArrangement = Arrangement.spacedBy(spacing.small)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    roleLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(roleLabel, style = MaterialTheme.typography.labelLarge)
                 AnimatedVisibility(
                     visible = metrics != null,
                     enter = expandVertically(animationSpec = spring()) + fadeIn(),
                     exit = shrinkVertically(animationSpec = spring()) + fadeOut()
                 ) {
-                    if (metrics != null) {
-                        Text(
-                            "TTFS: ${metrics.first}ms • TPS: ${String.format("%.1f", metrics.second)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    metrics?.let { (ttfsMs, tps, contextPct) ->
+                        AssistChip(
+                            onClick = {},
+                            enabled = false,
+                            label = {
+                                Text(
+                                    text = "TTFS ${ttfsMs}ms • TPS ${String.format("%.1f", tps)}",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
                         )
                     }
                 }
             }
+
             MarkdownText(message.contentMarkdown)
 
-            if (message.role != "user" && showReasoningButton) {
-                val reasoningData by remember(message.metaJson) {
-                    derivedStateOf {
-                        runCatching {
-                            val meta = org.json.JSONObject(message.metaJson)
-                            val reasoning = meta.optString("reasoning", "")
-                            val reasoningDuration = meta.optLong("reasoningDurationMs", 0)
-                            val reasoningChars = meta.optInt("reasoningChars", 0)
-                            Triple(reasoning, reasoningDuration, reasoningChars)
-                        }.getOrNull() ?: Triple("", 0L, 0)
-                    }
-                }
+            if (!isUser && showReasoningButton && hasReasoning && onReasoningClick != null) {
                 AnimatedVisibility(
-                    visible = reasoningData.first.isNotBlank() && onReasoningClick != null,
+                    visible = hasReasoning,
                     enter = expandVertically(animationSpec = spring()) + fadeIn(),
                     exit = shrinkVertically(animationSpec = spring()) + fadeOut()
                 ) {
-                    if (reasoningData.first.isNotBlank() && onReasoningClick != null) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(spacing.tiny)
+                    ) {
+                        Text(
+                            text = "Reasoning snapshot",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = bubbleContentColor.copy(alpha = 0.8f)
+                        )
+                        Text(
+                            text = "${reasoningData.third} chars • ${reasoningData.second}ms",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = bubbleContentColor.copy(alpha = 0.7f)
+                        )
+                        TextButton(
+                            onClick = onReasoningClick,
+                            modifier = Modifier.align(Alignment.End)
                         ) {
-                            if (reasoningData.second > 0 || reasoningData.third > 0) {
-                                Text(
-                                    "${reasoningData.third} chars${if (reasoningData.second > 0) " • ${reasoningData.second}ms" else ""}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(end = 8.dp)
-                                )
-                            }
-                            TextButton(
-                                onClick = onReasoningClick,
-                                modifier = Modifier.semantics {
-                                    contentDescription = "Show reasoning process (${reasoningData.third} characters, ${reasoningData.second}ms duration)"
-                                }
-                            ) { Text("Reasoning") }
+                            Text("View reasoning")
                         }
                     }
                 }
             }
-        }
 
-        if (showCopyButton) {
-            TextButton(
-                onClick = {
-                    clipboard.setText(AnnotatedString(message.contentMarkdown))
-                },
-                modifier = Modifier.semantics {
-                    contentDescription = "Copy message to clipboard"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (showCopyButton) {
+                    TextButton(
+                        onClick = { clipboard.setText(AnnotatedString(message.contentMarkdown)) },
+                        modifier = Modifier.semantics { contentDescription = "Copy message to clipboard" }
+                    ) { Text("Copy") }
                 }
-            ) { Text("Copy") }
+            }
         }
     }
 }
@@ -161,43 +197,67 @@ fun StreamingMessageBubble(
 ) {
     val clipboard = LocalClipboardManager.current
 
-    Column(modifier.fillMaxWidth()) {
-        if (reasoningText.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("Reasoning", style = MaterialTheme.typography.titleSmall)
-                    if (onShowReasoningChange != null) {
-                        TextButton(onClick = { onShowReasoningChange(!showReasoning) }) {
-                            Text(if (showReasoning) "Hide" else "Show")
+    val spacing = LocalSpacing.current
+    val elevations = LocalElevations.current
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = spacing.tiny),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = elevations.level1,
+        color = MaterialTheme.colorScheme.surfaceColorAtElevation(elevations.level1)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = spacing.medium, vertical = spacing.small),
+            verticalArrangement = Arrangement.spacedBy(spacing.small)
+        ) {
+            if (reasoningText.isNotEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(spacing.tiny)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Reasoning", style = MaterialTheme.typography.labelLarge)
+                        if (onShowReasoningChange != null) {
+                            TextButton(onClick = { onShowReasoningChange(!showReasoning) }) {
+                                Text(if (showReasoning) "Hide" else "Show")
+                            }
                         }
                     }
-                }
-                if (showReasoning) {
-                    Text(reasoningText)
+                    if (showReasoning) {
+                        Text(reasoningText, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
-        }
 
-        if (currentText.isNotBlank()) {
-            Column(Modifier.fillMaxWidth()) {
+            if (currentText.isNotBlank()) {
                 MarkdownText(currentText)
                 val codeBlocks by remember(currentText) {
                     derivedStateOf { extractCodeBlocks(currentText) }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(spacing.tiny),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(modifier = Modifier.weight(1f))
                     if (showCopyButton) {
                         TextButton(onClick = {
                             clipboard.setText(AnnotatedString(currentText))
                         }) { Text("Copy") }
                     }
-
-                    if (codeBlocks.isNotEmpty()) {
-                        codeBlocks.forEachIndexed { idx, block ->
-                            TextButton(onClick = {
-                                clipboard.setText(AnnotatedString(block))
-                            }) {
-                                Text("Copy code #${idx + 1}")
-                            }
+                    codeBlocks.forEachIndexed { idx, block ->
+                        TextButton(onClick = {
+                            clipboard.setText(AnnotatedString(block))
+                        }) {
+                            Text("Copy code #${idx + 1}")
                         }
                     }
                 }
@@ -212,12 +272,15 @@ fun PerformanceMetrics(
     tps: Float,
     modifier: Modifier = Modifier
 ) {
+    val spacing = LocalSpacing.current
     Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = spacing.small),
+        horizontalArrangement = Arrangement.spacedBy(spacing.small)
     ) {
-        Text("TTFS: ${ttfsMs.toInt()} ms")
-        Text("TPS: ${"%.2f".format(tps)}")
+        AssistChip(onClick = {}, enabled = false, label = { Text("TTFS ${ttfsMs.toInt()} ms") })
+        AssistChip(onClick = {}, enabled = false, label = { Text("TPS ${"%.2f".format(tps)}") })
     }
 }
 

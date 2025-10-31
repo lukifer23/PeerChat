@@ -1,5 +1,16 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:${libs.versions.agp.get()}")
+    }
+}
+
 plugins {
     id 'com.diffplug.spotless'
+    id 'io.gitlab.arturbosch.detekt' apply false
 }
 
 spotless {
@@ -39,9 +50,22 @@ subprojects { subproject ->
         mustRunAfter(rootProject.tasks.named('clean'))
     }
 
-    subproject.plugins.withId('org.jetbrains.kotlin.android') {
-        apply plugin: 'io.gitlab.arturbosch.detekt'
+    subproject.pluginManager.withPlugin('org.jetbrains.kotlin.android') {
+        subproject.apply plugin: 'io.gitlab.arturbosch.detekt'
 
+        subproject.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                jvmTarget = '17'
+                freeCompilerArgs += [
+                        '-Xjvm-default=all',
+                        '-opt-in=kotlin.RequiresOptIn',
+                        '-Xskip-metadata-version-check',
+                        '-Xinline-classes'
+                ]
+            }
+        }
+
+    subproject.pluginManager.withPlugin('io.gitlab.arturbosch.detekt') {
         subproject.extensions.configure(io.gitlab.arturbosch.detekt.extensions.DetektExtension) { detektExt ->
             detektExt.buildUponDefaultConfig = true
             detektExt.config.setFrom(rootProject.files('detekt.yml'))
@@ -56,36 +80,7 @@ subprojects { subproject ->
             reports.txt.required.set(false)
             reports.sarif.required.set(false)
         }
-
-        subproject.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
-            kotlinOptions {
-                jvmTarget = '17'
-                freeCompilerArgs += [
-                        '-Xjvm-default=all',
-                        '-opt-in=kotlin.RequiresOptIn',
-                        '-Xskip-metadata-version-check',
-                        '-Xinline-classes'
-                ]
-            }
-        }
+    }
     }
 
-    subproject.plugins.withType(com.android.build.gradle.BasePlugin).configureEach {
-        subproject.extensions.configure(com.android.build.gradle.BaseExtension) { androidExt ->
-            androidExt.compileSdkVersion 34
-            androidExt.defaultConfig {
-                minSdk = 26
-                targetSdk = 34
-            }
-            androidExt.compileOptions {
-                sourceCompatibility = JavaVersion.VERSION_17
-                targetCompatibility = JavaVersion.VERSION_17
-            }
-        }
-    }
 }
-
-tasks.register('clean', Delete) {
-    delete rootProject.layout.buildDirectory
-}
-

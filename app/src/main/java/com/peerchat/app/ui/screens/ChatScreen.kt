@@ -3,6 +3,7 @@ package com.peerchat.app.ui.screens
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -33,6 +34,7 @@ import com.peerchat.app.ui.StreamingUiState
 import com.peerchat.app.ui.components.MessageBubble
 import com.peerchat.app.ui.components.PerformanceMetrics
 import com.peerchat.app.ui.components.StreamingMessageBubble
+import com.peerchat.app.ui.theme.LocalSpacing
 import com.peerchat.data.db.Message
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -51,13 +53,16 @@ fun ChatScreen(
 
     val listState = rememberLazyListState()
 
+    val spacing = LocalSpacing.current
+
     Column(
         modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(spacing.medium)
     ) {
         LazyColumn(
             modifier = Modifier.weight(1f),
-            state = listState
+            state = listState,
+            contentPadding = PaddingValues(vertical = spacing.small)
         ) {
             items(
                 items = messages,
@@ -93,14 +98,15 @@ fun ChatScreen(
         }
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(spacing.small),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a message…") }
+                placeholder = { Text("Type a message…") },
+                shape = MaterialTheme.shapes.large
             )
             androidx.compose.material3.Button(
                 enabled = enabled && !isStreaming && input.text.isNotBlank(),

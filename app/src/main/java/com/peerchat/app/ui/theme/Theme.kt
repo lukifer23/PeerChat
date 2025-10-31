@@ -1,97 +1,124 @@
 package com.peerchat.app.ui.theme
 
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Shapes
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
 
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF1976D2),
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFE3F2FD),
-    onPrimaryContainer = Color(0xFF0D47A1),
-
-    secondary = Color(0xFF03DAC6),
-    onSecondary = Color(0xFF000000),
-    secondaryContainer = Color(0xFFB2DFDB),
-    onSecondaryContainer = Color(0xFF004D40),
-
-    tertiary = Color(0xFFCF93D9),
-    onTertiary = Color(0xFF000000),
-    tertiaryContainer = Color(0xFFF3E5F5),
-    onTertiaryContainer = Color(0xFF4A148C),
-
-    background = Color(0xFFFAFAFA),
-    onBackground = Color(0xFF1C1B1F),
-
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1C1B1F),
-    surfaceVariant = Color(0xFFE7E0EC),
-    onSurfaceVariant = Color(0xFF49454F),
-
-    surfaceTint = Color(0xFF1976D2),
-    outline = Color(0xFF79747E),
-    outlineVariant = Color(0xFFCAC4D0),
-
-    error = Color(0xFFD32F2F),
-    onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFFCDCDC),
-    onErrorContainer = Color(0xFF410E0B)
+private val LightColorScheme = lightColorScheme(
+    primary = LightPrimary,
+    onPrimary = LightOnPrimary,
+    primaryContainer = LightPrimaryContainer,
+    onPrimaryContainer = LightOnPrimaryContainer,
+    secondary = LightSecondary,
+    onSecondary = LightOnSecondary,
+    secondaryContainer = LightSecondaryContainer,
+    onSecondaryContainer = LightOnSecondaryContainer,
+    tertiary = LightTertiary,
+    onTertiary = LightOnTertiary,
+    tertiaryContainer = LightTertiaryContainer,
+    onTertiaryContainer = LightOnTertiaryContainer,
+    error = LightError,
+    onError = LightOnError,
+    errorContainer = LightErrorContainer,
+    onErrorContainer = LightOnErrorContainer,
+    background = LightBackground,
+    onBackground = LightOnBackground,
+    surface = LightSurface,
+    onSurface = LightOnSurface,
+    surfaceVariant = LightSurfaceVariant,
+    onSurfaceVariant = LightOnSurfaceVariant,
+    outline = LightOutline,
+    outlineVariant = LightOutlineVariant,
+    inverseSurface = LightInverseSurface,
+    inverseOnSurface = LightInverseOnSurface,
+    inversePrimary = LightInversePrimary,
+    surfaceTint = LightPrimary,
+    scrim = Color.Black
 )
 
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFF8AB4FF),
-    onPrimary = Color(0xFF001633),
-    primaryContainer = Color(0xFF0B2D6B),
-    onPrimaryContainer = Color(0xFFD8E2FF),
+private val DarkColorScheme = darkColorScheme(
+    primary = DarkPrimary,
+    onPrimary = DarkOnPrimary,
+    primaryContainer = DarkPrimaryContainer,
+    onPrimaryContainer = DarkOnPrimaryContainer,
+    secondary = DarkSecondary,
+    onSecondary = DarkOnSecondary,
+    secondaryContainer = DarkSecondaryContainer,
+    onSecondaryContainer = DarkOnSecondaryContainer,
+    tertiary = DarkTertiary,
+    onTertiary = DarkOnTertiary,
+    tertiaryContainer = DarkTertiaryContainer,
+    onTertiaryContainer = DarkOnTertiaryContainer,
+    error = DarkError,
+    onError = DarkOnError,
+    errorContainer = DarkErrorContainer,
+    onErrorContainer = DarkOnErrorContainer,
+    background = DarkBackground,
+    onBackground = DarkOnBackground,
+    surface = DarkSurface,
+    onSurface = DarkOnSurface,
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = DarkOnSurfaceVariant,
+    outline = DarkOutline,
+    outlineVariant = DarkOutlineVariant,
+    inverseSurface = DarkInverseSurface,
+    inverseOnSurface = DarkInverseOnSurface,
+    inversePrimary = DarkInversePrimary,
+    surfaceTint = DarkPrimary,
+    scrim = Color.Black
+)
 
-    secondary = Color(0xFF80CBC4),
-    onSecondary = Color(0xFF00201C),
-    secondaryContainer = Color(0xFF2A4E4A),
-    onSecondaryContainer = Color(0xFFAEEDE5),
-
-    tertiary = Color(0xFFFFB4A9),
-    onTertiary = Color(0xFF3B0905),
-    tertiaryContainer = Color(0xFF5C1B14),
-    onTertiaryContainer = Color(0xFFFFDAD3),
-
-    background = Color(0xFF0B0E12),
-    onBackground = Color(0xFFE2E7EE),
-
-    surface = Color(0xFF0F1318),
-    onSurface = Color(0xFFE2E7EE),
-    surfaceVariant = Color(0xFF1A2129),
-    onSurfaceVariant = Color(0xFFBFC6D0),
-
-    surfaceTint = Color(0xFF8AB4FF),
-    outline = Color(0xFF3A434F),
-    outlineVariant = Color(0xFF242C35),
-
-    error = Color(0xFFFF5449),
-    onError = Color(0xFF370001),
-    errorContainer = Color(0xFF8C1913),
-    onErrorContainer = Color(0xFFFFDAD6)
+private val PeerShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
 @Composable
 fun PeerChatTheme(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) DarkColors else LightColors,
-        typography = PeerTypography,
-        shapes = Shapes(
-            extraSmall = Shapes().extraSmall,
-            small = Shapes().small,
-            medium = Shapes().medium,
-            large = Shapes().large,
-            extraLarge = Shapes().extraLarge
-        ),
-        content = content
-    )
+    val context = LocalContext.current
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
+
+    val spacing = remember { PeerSpacing() }
+    val elevations = remember { PeerElevations() }
+    val gradientColors = remember(darkTheme) {
+        if (darkTheme) DarkGradientColors else LightGradientColors
+    }
+
+    CompositionLocalProvider(
+        LocalSpacing provides spacing,
+        LocalElevations provides elevations,
+        LocalGradientColors provides gradientColors
+    ) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = PeerTypography,
+            shapes = PeerShapes,
+            content = content
+        )
+    }
 }
-
-
