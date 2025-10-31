@@ -22,6 +22,11 @@ app/src/main/assets/tokenizers/
 *.hprof
 *.ec
 
+# Crash dumps and tombstones
+tombstone_*.txt
+*.tombstone
+crash_dump*
+
 # Generated benchmark data
 benchmark-results/
 
