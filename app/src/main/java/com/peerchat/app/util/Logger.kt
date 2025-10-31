@@ -1,14 +1,21 @@
 package com.peerchat.app.util
 
 import android.content.Context
+import android.os.Debug
+import android.os.Process
 import android.util.Log
 import com.peerchat.app.BuildConfig
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration
+import kotlin.time.DurationUnit
+import kotlin.time.measureTime
 
 object Logger {
     private const val DEFAULT_TAG = "PeerChat"
     @Volatile private var tag: String = DEFAULT_TAG
     @Volatile private var fileLogger: FileRingLogger? = null
+    private val performanceTimers = ConcurrentHashMap<String, Long>()
 
     fun init(context: Context) {
         if (BuildConfig.DEBUG) {
@@ -17,6 +24,112 @@ object Logger {
     }
 
     fun setTag(newTag: String) { tag = newTag.ifBlank { DEFAULT_TAG } }
+
+    /**
+     * Start performance profiling for an operation
+     */
+    fun startPerfTimer(operation: String, fields: Map<String, Any?> = emptyMap()) {
+        val startTime = System.nanoTime()
+        performanceTimers[operation] = startTime
+
+        d("PERF_START: $operation", fields + mapOf(
+            "perfOperation" to operation,
+            "timestamp" to startTime,
+            "threadId" to Thread.currentThread().id,
+            "threadName" to Thread.currentThread().name
+        ))
+    }
+
+    /**
+     * End performance profiling and log results
+     */
+    fun endPerfTimer(operation: String, fields: Map<String, Any?> = emptyMap()) {
+        val endTime = System.nanoTime()
+        val startTime = performanceTimers.remove(operation)
+
+        if (startTime != null) {
+            val durationMs = (endTime - startTime) / 1_000_000.0
+            val memoryInfo = getMemoryInfo()
+
+            i("PERF_END: $operation", fields + mapOf(
+                "perfOperation" to operation,
+                "durationMs" to durationMs,
+                "startTime" to startTime,
+                "endTime" to endTime,
+                "threadId" to Thread.currentThread().id,
+                "threadName" to Thread.currentThread().name
+            ) + memoryInfo)
+        } else {
+            w("PERF_ERROR: Timer not found for operation: $operation")
+        }
+    }
+
+    /**
+     * Profile a block of code with automatic timing
+     */
+    inline fun <T> profile(operation: String, fields: Map<String, Any?> = emptyMap(), block: () -> T): T {
+        startPerfTimer(operation, fields)
+        return try {
+            block()
+        } finally {
+            endPerfTimer(operation, fields)
+        }
+    }
+
+    /**
+     * Log performance metrics with memory usage
+     */
+    fun perf(message: String, fields: Map<String, Any?> = emptyMap()) {
+        val memoryInfo = getMemoryInfo()
+        val threadInfo = mapOf(
+            "threadId" to Thread.currentThread().id,
+            "threadName" to Thread.currentThread().name,
+            "processId" to Process.myPid(),
+            "cpuTime" to Debug.threadCpuTimeNanos()
+        )
+
+        i("PERF: $message", fields + memoryInfo + threadInfo)
+    }
+
+    /**
+     * Log detailed error context for debugging
+     */
+    fun errorContext(message: String, error: Throwable?, fields: Map<String, Any?> = emptyMap()) {
+        val contextInfo = mapOf(
+            "threadId" to Thread.currentThread().id,
+            "threadName" to Thread.currentThread().name,
+            "processId" to Process.myPid(),
+            "threadCpuTime" to Debug.threadCpuTimeNanos(),
+            "availableProcessors" to Runtime.getRuntime().availableProcessors(),
+            "freeMemoryMB" to Runtime.getRuntime().freeMemory() / 1024 / 1024,
+            "totalMemoryMB" to Runtime.getRuntime().totalMemory() / 1024 / 1024,
+            "maxMemoryMB" to Runtime.getRuntime().maxMemory() / 1024 / 1024
+        ) + getMemoryInfo()
+
+        e("ERROR_CONTEXT: $message", fields + contextInfo, error)
+    }
+
+    /**
+     * Get detailed memory information
+     */
+    private fun getMemoryInfo(): Map<String, Any?> {
+        val runtime = Runtime.getRuntime()
+        val memoryInfo = Debug.MemoryInfo()
+        Debug.getMemoryInfo(memoryInfo)
+
+        return mapOf(
+            "heapAllocatedMB" to (runtime.totalMemory() - runtime.freeMemory()) / 1024 / 1024,
+            "heapFreeMB" to runtime.freeMemory() / 1024 / 1024,
+            "heapTotalMB" to runtime.totalMemory() / 1024 / 1024,
+            "heapMaxMB" to runtime.maxMemory() / 1024 / 1024,
+            "nativeAllocatedKB" to memoryInfo.nativePss,
+            "dalvikAllocatedKB" to memoryInfo.dalvikPss,
+            "totalAllocatedKB" to memoryInfo.totalPss,
+            "gcCount" to (Debug.getRuntimeStat("art.gc.gc-count")?.toLongOrNull() ?: 0),
+            "gcTime" to (Debug.getRuntimeStat("art.gc.gc-time")?.toLongOrNull() ?: 0),
+            "blocksCanBeFreedKB" to ((Debug.getRuntimeStat("art.gc.bytes-allocated")?.toLongOrNull() ?: 0) / 1024)
+        )
+    }
 
     fun d(message: String, fields: Map<String, Any?> = emptyMap()) {
         val msg = format(message, fields)

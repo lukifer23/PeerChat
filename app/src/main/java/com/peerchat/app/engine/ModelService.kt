@@ -40,12 +40,56 @@ class ModelService(
         onProgress: ((ModelLoadManager.ModelLoadProgress) -> Unit)? = null,
         onHealthCheck: ((ModelHealthChecker.HealthResult) -> Unit)? = null
     ): OperationResult<ModelManifest> {
-        // Find manifest for this config
-        val manifests = repository.listManifests()
-        val manifest = manifests.firstOrNull { it.filePath == config.modelPath }
-            ?: return OperationResult.Failure("Model manifest not found for path: ${config.modelPath}")
+        return Logger.profile("model_load_full", mapOf(
+            "modelPath" to config.modelPath,
+            "nThreads" to config.threads,
+            "nGpuLayers" to config.gpuLayers,
+            "nCtx" to config.contextLength
+        )) {
+            try {
+                // Find manifest for this config
+                Logger.startPerfTimer("model_manifest_lookup", mapOf("modelPath" to config.modelPath))
+                val manifests = repository.listManifests()
+                val manifest = manifests.firstOrNull { it.filePath == config.modelPath }
+                Logger.endPerfTimer("model_manifest_lookup", mapOf("manifestsFound" to manifests.size))
 
-        return loadManager.loadModel(manifest, config, onProgress, onHealthCheck)
+                if (manifest == null) {
+                    Logger.w("ModelService: manifest not found", mapOf("modelPath" to config.modelPath))
+                    return@profile OperationResult.Failure("Model manifest not found for path: ${config.modelPath}")
+                }
+
+                Logger.perf("ModelService: starting model load", mapOf(
+                    "modelId" to manifest.id,
+                    "modelName" to manifest.name,
+                    "modelSize" to manifest.sizeBytes
+                ))
+
+                val result = loadManager.loadModel(manifest, config, onProgress, onHealthCheck)
+
+                when (result) {
+                    is OperationResult.Success -> {
+                        Logger.perf("ModelService: model loaded successfully", mapOf(
+                            "modelId" to manifest.id,
+                            "modelName" to manifest.name
+                        ))
+                    }
+                    is OperationResult.Failure -> {
+                        Logger.errorContext("ModelService: model load failed", null, mapOf(
+                            "modelId" to manifest.id,
+                            "modelName" to manifest.name,
+                            "error" to result.error
+                        ))
+                    }
+                }
+
+                result
+            } catch (e: Exception) {
+                Logger.errorContext("ModelService: unexpected error during model load", e, mapOf(
+                    "modelPath" to config.modelPath
+                ))
+                OperationResult.Failure("Model load error: ${e.message}")
+            }
+        }
     }
 
     /**

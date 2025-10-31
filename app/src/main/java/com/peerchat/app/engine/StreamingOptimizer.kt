@@ -1,11 +1,13 @@
 package com.peerchat.app.engine
 
 import com.peerchat.app.util.Logger
+import com.peerchat.engine.EngineMetrics
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
@@ -74,7 +76,7 @@ class StreamingOptimizer(
      */
     private suspend fun processBatches(
         batchChannel: ReceiveChannel<TokenBatch>,
-        downstream: kotlinx.coroutines.flow.FlowCollector<EngineStreamEvent>
+        downstream: FlowCollector<EngineStreamEvent>
     ) {
         for (batch in batchChannel) {
             // Emit individual tokens

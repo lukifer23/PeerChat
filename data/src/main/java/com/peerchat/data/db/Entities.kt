@@ -279,6 +279,11 @@ data class BenchmarkResult(
     val totalMs: Long,
     val tps: Float, // Tokens Per Second
     val contextUsedPct: Float,
+    val prefillMs: Long = 0L, // Prefill phase duration
+    val decodeMs: Long = 0L, // Decode phase duration
+    val memoryUsageMB: Long = 0L, // Peak memory usage during benchmark
+    val gcCount: Int = 0, // Number of GC events during benchmark
+    val threadCpuTimeNs: Long = 0L, // CPU time spent on benchmark thread
     val errorMessage: String?, // Null if successful
     val runAt: Long,
     val deviceInfo: String, // Device/hardware info

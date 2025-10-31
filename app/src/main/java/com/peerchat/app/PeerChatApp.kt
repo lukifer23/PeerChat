@@ -1,7 +1,9 @@
 package com.peerchat.app
 
 import android.app.Application
+import com.peerchat.app.BuildConfig
 import com.peerchat.app.engine.ModelDownloadManager
+import com.peerchat.app.engine.PerformanceMonitor
 import com.peerchat.app.rag.AnnIndexStorage
 import com.peerchat.app.util.Logger
 import com.peerchat.engine.EngineRuntime
@@ -22,6 +24,20 @@ class PeerChatApp : Application() {
         Logger.init(this)
         ModelDownloadManager.scheduleMaintenance(this)
         
+        // Configure Android embedding service for RAG
+        // This will be done when services are injected in ViewModels
+
+        // Initialize performance monitoring in debug builds
+        if (BuildConfig.DEBUG) {
+            try {
+                val performanceMonitor = PerformanceMonitor(this)
+                performanceMonitor.startMonitoring(10000) // Monitor every 10 seconds in debug
+                Logger.i("PeerChatApp: Performance monitoring initialized")
+            } catch (e: Exception) {
+                Logger.w("PeerChatApp: Failed to initialize performance monitoring", mapOf("error" to e.message), e)
+            }
+        }
+
         // Pre-warm engine and scan for model metadata
         applicationScope.launch {
             EngineRuntime.ensureInitialized()

@@ -7,6 +7,7 @@ import com.peerchat.app.engine.ModelManifestService
 import com.peerchat.app.engine.ModelRepository
 import com.peerchat.app.engine.ModelService
 import com.peerchat.app.engine.ModelStateCache
+import com.peerchat.app.engine.PerformanceMonitor
 import com.peerchat.app.engine.SearchService
 import dagger.Module
 import dagger.Provides
@@ -68,7 +69,14 @@ object ServiceModule {
 
     @Provides
     @Singleton
+    fun providePerformanceMonitor(@ApplicationContext context: Context): PerformanceMonitor {
+        return PerformanceMonitor(context)
+    }
+
+    @Provides
+    @Singleton
     fun provideRetriever(): com.peerchat.rag.Retriever {
         return com.peerchat.rag.RetrieverProvider.instance
     }
+
 }

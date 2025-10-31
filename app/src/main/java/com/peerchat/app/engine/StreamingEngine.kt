@@ -17,25 +17,7 @@ sealed interface EngineStreamEvent {
 }
 
 object StreamingEngine {
-    // Optimized streaming with batching and backpressure management
-    private val optimizer = StreamingOptimizer()
     fun stream(
-        prompt: String,
-        systemPrompt: String?,
-        template: String?,
-        temperature: Float,
-        topP: Float,
-        topK: Int,
-        maxTokens: Int,
-        stop: Array<String>
-    ): Flow<EngineStreamEvent> {
-        // Get raw stream and optimize it
-        val rawStream = createRawStream(prompt, systemPrompt, template, temperature, topP, topK, maxTokens, stop)
-        return optimizer.optimizeStream(rawStream)
-    }
-
-    // Raw streaming without optimization (for internal use)
-    private fun createRawStream(
         prompt: String,
         systemPrompt: String?,
         template: String?,
@@ -77,11 +59,11 @@ object StreamingEngine {
                         "StreamingEngine: chunk",
                         mapOf("chars" to chunk.length, "totalChars" to tokenChars)
                     )
-                    val result = trySendBlocking(EngineStreamEvent.Token(chunk))
+                    val result = trySend(EngineStreamEvent.Token(chunk))
                     if (result.isFailure) {
                         Logger.w(
                             "StreamingEngine: chunk_delivery_failed",
-                            mapOf("reason" to (result.exceptionOrNull()?.message ?: "backpressure"))
+                            mapOf("closed" to isClosedForSend)
                         )
                         EngineNative.abort()
                     }
@@ -90,7 +72,12 @@ object StreamingEngine {
                 Logger.i("StreamingEngine: done_chunk_received", mapOf("totalChars" to tokenChars))
                 val metrics = EngineRuntime.updateMetricsFromNative()
                 completed.set(true)
-                trySendBlocking(EngineStreamEvent.Terminal(metrics))
+                if (!trySend(EngineStreamEvent.Terminal(metrics)).isSuccess) {
+                    Logger.w(
+                        "StreamingEngine: terminal_delivery_failed",
+                        mapOf("closed" to isClosedForSend)
+                    )
+                }
                 Logger.i(
                     "StreamingEngine: terminal",
                     mapOf(
@@ -123,7 +110,7 @@ object StreamingEngine {
             completed.set(true)
             val metrics = EngineRuntime.updateMetricsFromNative()
             val errorMetrics = if (metrics.isError) metrics else metrics.copy(stopReason = "error")
-            trySendBlocking(EngineStreamEvent.Terminal(errorMetrics))
+            trySend(errorMetrics.let { EngineStreamEvent.Terminal(it) })
             Logger.e(
                 "StreamingEngine: start_failed",
                 mapOf("error" to (start.exceptionOrNull()?.message ?: "unknown")),

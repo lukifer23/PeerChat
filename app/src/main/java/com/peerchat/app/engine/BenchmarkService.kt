@@ -2,6 +2,7 @@ package com.peerchat.app.engine
 
 import android.content.Context
 import android.os.Build
+import android.os.Debug
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.util.Logger
@@ -14,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlin.time.measureTime
 
 /**
  * Service for running automated model benchmarks with standardized prompts and metrics collection.
@@ -40,7 +42,7 @@ object BenchmarkService {
     )
 
     /**
-     * Benchmark result
+     * Benchmark result with comprehensive performance metrics
      */
     data class BenchmarkResultData(
         val promptText: String,
@@ -50,6 +52,11 @@ object BenchmarkService {
         val totalMs: Long,
         val tps: Float, // Tokens Per Second
         val contextUsedPct: Float,
+        val prefillMs: Long, // Prefill phase duration
+        val decodeMs: Long, // Decode phase duration
+        val memoryUsageMB: Long, // Peak memory usage during benchmark
+        val gcCount: Int, // Number of GC events during benchmark
+        val threadCpuTimeNs: Long, // CPU time spent on benchmark thread
         val errorMessage: String? = null,
         val deviceInfo: String
     )
@@ -130,6 +137,11 @@ object BenchmarkService {
                     totalMs = result.totalMs,
                     tps = result.tps,
                     contextUsedPct = result.contextUsedPct,
+                    prefillMs = result.prefillMs,
+                    decodeMs = result.decodeMs,
+                    memoryUsageMB = result.memoryUsageMB,
+                    gcCount = result.gcCount,
+                    threadCpuTimeNs = result.threadCpuTimeNs,
                     errorMessage = result.errorMessage,
                     runAt = System.currentTimeMillis(),
                     deviceInfo = result.deviceInfo
@@ -163,7 +175,7 @@ object BenchmarkService {
     }
 
     /**
-     * Run a single benchmark test with one prompt
+     * Run a single benchmark test with comprehensive performance monitoring
      */
     private suspend fun runSingleBenchmark(
         manifest: ModelManifest,
@@ -171,114 +183,150 @@ object BenchmarkService {
         config: BenchmarkConfig,
         deviceInfo: String
     ): BenchmarkResultData {
-        return try {
-            // Ensure model is loaded
-            if (EngineRuntime.status.value !is EngineRuntime.EngineStatus.Loaded) {
-                throw IllegalStateException("Model must be loaded before benchmarking")
-            }
+        return Logger.profile("benchmark_single_test", mapOf("modelId" to manifest.id, "promptLength" to prompt.length)) {
+            try {
+                // Ensure model is loaded
+                if (EngineRuntime.status.value !is EngineRuntime.EngineStatus.Loaded) {
+                    throw IllegalStateException("Model must be loaded before benchmarking")
+                }
 
-            // Get template
-            val template = TemplateCatalog.resolve(null) ?: TemplateCatalog.default()
+                // Get template
+                val template = TemplateCatalog.resolve(null) ?: TemplateCatalog.default()
 
-            // Record start time for TTFT measurement
-            val startTime = System.nanoTime()
+                // Collect baseline performance metrics
+                val baselineGcCount = Debug.getRuntimeStat("art.gc.gc-count")?.toLongOrNull() ?: 0
+                val baselineCpuTime = Debug.threadCpuTimeNanos()
+                val baselineMemoryInfo = Debug.MemoryInfo().apply { Debug.getMemoryInfo(this) }
 
-            Logger.i(
-                "BenchmarkService: starting single test",
-                mapOf(
-                    "modelId" to manifest.id,
-                    "promptLength" to prompt.length,
-                    "template" to template.id
+                Logger.i(
+                    "BenchmarkService: starting single test",
+                    mapOf(
+                        "modelId" to manifest.id,
+                        "promptLength" to prompt.length,
+                        "template" to template.id,
+                        "baselineGcCount" to baselineGcCount,
+                        "baselineMemoryKB" to baselineMemoryInfo.totalPss
+                    )
                 )
-            )
 
-            var firstTokenTime: Long? = null
-            var totalTokens = 0
-            var finalMetrics: EngineMetrics? = null
+                // Record start time for TTFT measurement
+                val startTime = System.nanoTime()
 
-            // Run inference
-            StreamingEngine.stream(
-                prompt = prompt,
-                systemPrompt = null,
-                template = template.id,
-                temperature = config.temperature,
-                topP = config.topP,
-                topK = config.topK,
-                maxTokens = config.maxTokens,
-                stop = emptyArray<String>()
-            ).collect { event ->
-                when (event) {
-                    is EngineStreamEvent.Token -> {
-                        totalTokens++
-                        if (firstTokenTime == null) {
-                            firstTokenTime = System.nanoTime()
+                var firstTokenTime: Long? = null
+                var totalTokens = 0
+                var finalMetrics: EngineMetrics? = null
+                var peakMemoryUsageKB = baselineMemoryInfo.totalPss
+
+                // Run inference with performance monitoring
+                Logger.startPerfTimer("benchmark_inference", mapOf("modelId" to manifest.id))
+                StreamingEngine.stream(
+                    prompt = prompt,
+                    systemPrompt = null,
+                    template = template.id,
+                    temperature = config.temperature,
+                    topP = config.topP,
+                    topK = config.topK,
+                    maxTokens = config.maxTokens,
+                    stop = emptyArray<String>()
+                ).collect { event ->
+                    when (event) {
+                        is EngineStreamEvent.Token -> {
+                            totalTokens++
+                            if (firstTokenTime == null) {
+                                firstTokenTime = System.nanoTime()
+                            }
+
+                            // Track peak memory usage during inference
+                            val currentMemoryInfo = Debug.MemoryInfo().apply { Debug.getMemoryInfo(this) }
+                            peakMemoryUsageKB = maxOf(peakMemoryUsageKB, currentMemoryInfo.totalPss)
+                        }
+                        is EngineStreamEvent.Terminal -> {
+                            finalMetrics = event.metrics
                         }
                     }
-                    is EngineStreamEvent.Terminal -> {
-                        finalMetrics = event.metrics
-                    }
                 }
-            }
+                Logger.endPerfTimer("benchmark_inference", mapOf("tokensGenerated" to totalTokens))
 
-            val endTime = System.nanoTime()
-            val totalDurationMs = (endTime - startTime) / 1_000_000.0
-            val ttftMs = firstTokenTime?.let { (it - startTime) / 1_000_000.0 } ?: totalDurationMs
+                val endTime = System.nanoTime()
+                val totalDurationMs = (endTime - startTime) / 1_000_000.0
+                val ttftMs = firstTokenTime?.let { (it - startTime) / 1_000_000.0 } ?: totalDurationMs
 
-            // Calculate TPS (tokens per second)
-            val tps = if (totalDurationMs > 0) {
-                (totalTokens.toDouble() / totalDurationMs * 1000.0).toFloat()
-            } else {
-                0.0f
-            }
+                // Calculate TPS (tokens per second)
+                val tps = if (totalDurationMs > 0) {
+                    (totalTokens.toDouble() / totalDurationMs * 1000.0).toFloat()
+                } else {
+                    0.0f
+                }
 
-            val result = BenchmarkResultData(
-                promptText = prompt,
-                promptTokens = finalMetrics?.promptTokens ?: 0,
-                generatedTokens = totalTokens,
-                ttftMs = ttftMs.toLong(),
-                totalMs = totalDurationMs.toLong(),
-                tps = tps,
-                contextUsedPct = finalMetrics?.contextUsedPct?.toFloat() ?: 0f,
-                deviceInfo = deviceInfo
-            )
+                // Collect final performance metrics
+                val finalGcCount = Debug.getRuntimeStat("art.gc.gc-count")?.toLongOrNull() ?: 0
+                val finalCpuTime = Debug.threadCpuTimeNanos()
+                val gcEvents = (finalGcCount - baselineGcCount).toInt()
+                val threadCpuTimeNs = finalCpuTime - baselineCpuTime
 
-            Logger.i(
-                "BenchmarkService: single test completed",
-                mapOf(
-                    "modelId" to manifest.id,
-                    "promptTokens" to result.promptTokens,
-                    "generatedTokens" to result.generatedTokens,
-                    "ttftMs" to result.ttftMs,
-                    "totalMs" to result.totalMs,
-                    "tps" to result.tps,
-                    "contextUsedPct" to result.contextUsedPct
+                val result = BenchmarkResultData(
+                    promptText = prompt,
+                    promptTokens = finalMetrics?.promptTokens ?: 0,
+                    generatedTokens = totalTokens,
+                    ttftMs = ttftMs.toLong(),
+                    totalMs = totalDurationMs.toLong(),
+                    tps = tps,
+                    contextUsedPct = finalMetrics?.contextUsedPct?.toFloat() ?: 0f,
+                    prefillMs = finalMetrics?.prefillMs?.toLong() ?: 0L,
+                    decodeMs = finalMetrics?.decodeMs?.toLong() ?: 0L,
+                    memoryUsageMB = (peakMemoryUsageKB / 1024).toLong(),
+                    gcCount = gcEvents,
+                    threadCpuTimeNs = threadCpuTimeNs,
+                    deviceInfo = deviceInfo
                 )
-            )
 
-            result
+                Logger.perf("BenchmarkService: single test completed",
+                    mapOf(
+                        "modelId" to manifest.id,
+                        "promptTokens" to result.promptTokens,
+                        "generatedTokens" to result.generatedTokens,
+                        "ttftMs" to result.ttftMs,
+                        "totalMs" to result.totalMs,
+                        "tps" to result.tps,
+                        "contextUsedPct" to result.contextUsedPct,
+                        "prefillMs" to result.prefillMs,
+                        "decodeMs" to result.decodeMs,
+                        "memoryUsageMB" to result.memoryUsageMB,
+                        "gcCount" to result.gcCount,
+                        "threadCpuTimeNs" to result.threadCpuTimeNs
+                    )
+                )
 
-        } catch (e: Exception) {
-            Logger.e(
-                "BenchmarkService: single test failed",
-                mapOf(
-                    "modelId" to manifest.id,
-                    "promptLength" to prompt.length,
-                    "error" to e.message
-                ),
-                e
-            )
+                result
 
-            BenchmarkResultData(
-                promptText = prompt,
-                promptTokens = 0,
-                generatedTokens = 0,
-                ttftMs = 0,
-                totalMs = 0,
-                tps = 0f,
-                contextUsedPct = 0f,
-                errorMessage = e.message ?: "Unknown error",
-                deviceInfo = deviceInfo
-            )
+            } catch (e: Exception) {
+                Logger.errorContext(
+                    "BenchmarkService: single test failed",
+                    e,
+                    mapOf(
+                        "modelId" to manifest.id,
+                        "promptLength" to prompt.length,
+                        "error" to e.message
+                    )
+                )
+
+                BenchmarkResultData(
+                    promptText = prompt,
+                    promptTokens = 0,
+                    generatedTokens = 0,
+                    ttftMs = 0,
+                    totalMs = 0,
+                    tps = 0f,
+                    contextUsedPct = 0f,
+                    prefillMs = 0L,
+                    decodeMs = 0L,
+                    memoryUsageMB = 0L,
+                    gcCount = 0,
+                    threadCpuTimeNs = 0L,
+                    errorMessage = e.message ?: "Unknown error",
+                    deviceInfo = deviceInfo
+                )
+            }
         }
     }
 

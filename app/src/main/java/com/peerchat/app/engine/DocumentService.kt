@@ -6,8 +6,11 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.util.Logger
 import com.peerchat.app.rag.AnnIndexWorkManager
 import com.peerchat.app.docs.OcrService
+import com.peerchat.app.docs.AndroidNativePdfService
+import com.peerchat.app.docs.AndroidNativeOcrService
 import com.peerchat.data.db.Document
 import com.peerchat.rag.RagService
 import com.peerchat.engine.EngineRuntime
@@ -26,6 +29,9 @@ class DocumentService(
     private val context: Context,
     private val repository: PeerChatRepository
 ) {
+    // Android native processing services
+    private val androidPdfService = AndroidNativePdfService(context)
+    private val androidOcrService = AndroidNativeOcrService(context)
     /**
      * Import a document from a URI and index it for RAG.
      */
@@ -129,12 +135,7 @@ class DocumentService(
     private suspend fun extractText(resolver: ContentResolver, uri: Uri, mime: String): OcrService.OcrResult {
         return when {
             mime == "application/pdf" -> {
-                val text = extractPdfText(resolver, uri)
-                if (text.isBlank()) {
-                    OcrService.OcrResult.Failure("PDF extraction returned empty text")
-                } else {
-                    OcrService.OcrResult.Success(text)
-                }
+                extractPdfTextWithFallback(uri)
             }
             mime.startsWith("text/") -> {
                 val text = resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
@@ -144,9 +145,33 @@ class DocumentService(
                     OcrService.OcrResult.Success(text)
                 }
             }
-            mime.startsWith("image/") -> OcrService.extractText(context, uri)
+            mime.startsWith("image/") -> {
+                extractImageTextWithFallback(uri)
+            }
             else -> OcrService.OcrResult.Failure("Unsupported file type: $mime")
         }
+    }
+
+    /**
+     * Extract text from PDF documents with Android native fallback.
+     */
+    private suspend fun extractPdfTextWithFallback(uri: Uri): OcrService.OcrResult {
+        // Try PdfBox first (primary method)
+        val pdfBoxText = extractPdfText(context.contentResolver, uri)
+        if (pdfBoxText.isNotBlank()) {
+            return OcrService.OcrResult.Success(pdfBoxText)
+        }
+
+        // Fallback to Android native PDF processing
+        if (androidPdfService.canHandle(uri)) {
+            val nativeResult = androidPdfService.extractText(uri)
+            if (nativeResult.text.isNotBlank()) {
+                Logger.i("DocumentService: used Android native PDF extraction as fallback")
+                return OcrService.OcrResult.Success(nativeResult.text)
+            }
+        }
+
+        return OcrService.OcrResult.Failure("PDF extraction failed with all available methods")
     }
 
     /**
@@ -161,6 +186,33 @@ class DocumentService(
                 }
             } else ""
         }
+    }
+
+    /**
+     * Extract text from images with Android native OCR fallback.
+     */
+    private suspend fun extractImageTextWithFallback(uri: Uri): OcrService.OcrResult {
+        // Try existing OCR service first
+        val existingResult = OcrService.extractText(context, uri)
+        if (existingResult is OcrService.OcrResult.Success) {
+            return existingResult
+        }
+
+        // Fallback to Android native OCR
+        if (androidOcrService.canHandle(uri)) {
+            val nativeResult = androidOcrService.extractText(uri)
+            when (nativeResult) {
+                is AndroidNativeOcrService.OcrResult.Success -> {
+                    Logger.i("DocumentService: used Android native OCR as fallback")
+                    return OcrService.OcrResult.Success(nativeResult.ocrResult.text)
+                }
+                is AndroidNativeOcrService.OcrResult.Failure -> {
+                    Logger.w("DocumentService: Android native OCR failed", mapOf("error" to nativeResult.error))
+                }
+            }
+        }
+
+        return existingResult // Return original failure result
     }
 
     /**

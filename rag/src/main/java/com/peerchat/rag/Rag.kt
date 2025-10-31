@@ -16,6 +16,8 @@ import kotlin.math.sqrt
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
+import kotlinx.coroutines.runBlocking
+import android.util.Log
 
 // Token & embedding caches with LRU eviction under bounded memory
 private val cacheLock = ReentrantReadWriteLock()
@@ -86,13 +88,8 @@ private fun countTokensCached(text: String): Int {
     return count
 }
 
-// Cached embedding computation to reduce redundant calculations
+// Cached embedding computation to reduce redundant calculations with Android native fallback
 private fun embedCached(texts: Array<String>): Array<FloatArray> {
-    val engineStatus = EngineRuntime.status.value
-    if (engineStatus !is EngineRuntime.EngineStatus.Loaded) {
-        return Array(texts.size) { FloatArray(0) }
-    }
-
     val results = Array(texts.size) { FloatArray(0) }
     val uncachedTexts = mutableListOf<String>()
     val uncachedIndices = mutableListOf<Int>()
@@ -113,9 +110,7 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
 
     // Compute uncached embeddings in batch
     if (uncachedTexts.isNotEmpty()) {
-        val uncachedEmbeddings = runCatching {
-            EngineNative.embed(uncachedTexts.toTypedArray())
-        }.getOrDefault(Array(uncachedTexts.size) { FloatArray(0) })
+        val uncachedEmbeddings = computeEmbeddingsWithFallback(uncachedTexts.toTypedArray())
 
         // Cache and assign results
         cacheLock.write {
@@ -133,6 +128,48 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
     }
 
     return results
+}
+
+// Compute embeddings with multiple fallback strategies
+private fun computeEmbeddingsWithFallback(texts: Array<String>): Array<FloatArray> {
+    val engineStatus = EngineRuntime.status.value
+
+    // Try llama.cpp embeddings first if model is loaded
+    if (engineStatus is EngineRuntime.EngineStatus.Loaded) {
+        val nativeEmbeddings = runCatching {
+            EngineNative.embed(texts)
+        }.getOrDefault(Array(texts.size) { FloatArray(0) })
+
+        // Check if we got valid embeddings from all texts
+        val hasValidEmbeddings = nativeEmbeddings.all { it.isNotEmpty() }
+        if (hasValidEmbeddings) {
+            return nativeEmbeddings
+        }
+
+        Log.w("RagService", "native embeddings failed or incomplete, trying Android fallback. textsCount=${texts.size}, validEmbeddings=${nativeEmbeddings.count { it.isNotEmpty() }}")
+    }
+
+    // Fallback to Android native embeddings
+    return tryAndroidNativeEmbeddings(texts)
+}
+
+// Try Android native embeddings as fallback
+private fun tryAndroidNativeEmbeddings(texts: Array<String>): Array<FloatArray> {
+    Log.i("RagService", "Android native embeddings requested but not implemented - returning empty embeddings")
+    // TODO: Implement Android native embeddings properly
+    // For now, just return empty arrays to avoid crashes during development
+    Array(texts.size) { FloatArray(0) }
+}
+
+// Android native embedding service (to be injected)
+private var androidEmbeddingService: Any? = null
+
+/**
+ * Configure Android native embedding service for fallback
+ */
+fun configureAndroidEmbeddingService(service: Any) {
+    androidEmbeddingService = service
+    Log.i("RagService", "configured Android embedding service")
 }
 
 object RagService {
