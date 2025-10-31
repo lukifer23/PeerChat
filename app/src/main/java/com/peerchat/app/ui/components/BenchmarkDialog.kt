@@ -12,7 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Error as ErrorIcon
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -410,7 +410,7 @@ private fun TestResultItem(result: BenchmarkService.BenchmarkResultData) {
                 horizontalArrangement = Arrangement.spacedBy(spacing.small)
             ) {
                 Icon(
-                    imageVector = if (result.errorMessage == null) Icons.Default.CheckCircle else ErrorIcon,
+                    imageVector = if (result.errorMessage == null) Icons.Filled.CheckCircle else Icons.Filled.Warning,
                     contentDescription = if (result.errorMessage == null) "Success" else "Error",
                     tint = if (result.errorMessage == null) Color.Green else Color.Red,
                     modifier = Modifier.width(16.dp)

@@ -24,7 +24,7 @@ object BenchmarkService {
      * Benchmark configuration
      */
     data class BenchmarkConfig(
-        val maxTokens: Int = 256,
+        val maxTokens: Int = 128,
         val temperature: Float = 0.8f,
         val topP: Float = 0.9f,
         val topK: Int = 40
@@ -205,7 +205,7 @@ object BenchmarkService {
                 topP = config.topP,
                 topK = config.topK,
                 maxTokens = config.maxTokens,
-                stop = emptyArray()
+                stop = emptyArray<String>()
             ).collect { event ->
                 when (event) {
                     is EngineStreamEvent.Token -> {
@@ -238,7 +238,7 @@ object BenchmarkService {
                 ttftMs = ttftMs.toLong(),
                 totalMs = totalDurationMs.toLong(),
                 tps = tps,
-                contextUsedPct = finalMetrics?.contextUsedPct ?: 0f,
+                contextUsedPct = finalMetrics?.contextUsedPct?.toFloat() ?: 0f,
                 deviceInfo = deviceInfo
             )
 

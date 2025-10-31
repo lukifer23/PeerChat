@@ -1,6 +1,8 @@
 package com.peerchat.app.ui
 
 import com.peerchat.app.engine.ModelRepository
+import com.peerchat.app.engine.ModelPreloader
+import com.peerchat.app.engine.ModelLoadManager
 import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.data.db.Chat
 import com.peerchat.data.db.Folder
@@ -38,11 +40,28 @@ data class ModelState(
     val importingModel: Boolean = false,
     val cacheStats: ModelRepository.CacheStats = ModelRepository.CacheStats(),
     val isOfflineMode: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // Robust loading system
+    val isLoadingModel: Boolean = false,
+    val loadProgress: ModelLoadManager.ModelLoadProgress? = null,
+    val preloadStatuses: Map<String, ModelPreloader.PreloadStatus> = emptyMap(),
+    val preloadStats: ModelPreloader.PreloadStats = ModelPreloader.PreloadStats(
+        activeLoads = 0, queuedRequests = 0, preloadedModels = 0, maxPreloadedModels = 3,
+        recentModels = emptyList(), preloadStatuses = emptyMap()
+    )
 )
 
 data class DocumentState(
     val indexing: Boolean = false
+)
+
+data class RagRuntimeState(
+    val totalDocuments: Int = 0,
+    val totalChunks: Int = 0,
+    val totalEmbeddings: Int = 0,
+    val averageChunkTokens: Float = 0f,
+    val docScoreCacheSize: Int = 0,
+    val docScoreCacheMax: Int = 2000
 )
 
 data class SearchResultItem(
@@ -68,6 +87,7 @@ data class HomeUiState(
     val search: SearchState = SearchState(),
     val model: ModelState = ModelState(),
     val documents: DocumentState = DocumentState(),
+    val rag: RagRuntimeState = RagRuntimeState(),
     val dialogState: DialogState = DialogState.None
 )
 

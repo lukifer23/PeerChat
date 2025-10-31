@@ -313,6 +313,9 @@ bool emit_chunk(StreamContext * stream, const std::string & text, bool done) {
         LOGE("failed to allocate chunk string");
         return false;
     }
+    if (done) {
+        LOGI("emit_chunk: done signal dispatched");
+    }
     stream->env->CallVoidMethod(stream->callback, stream->on_token, jChunk, done ? JNI_TRUE : JNI_FALSE);
     stream->env->DeleteLocalRef(jChunk);
     if (stream->env->ExceptionCheck()) {
@@ -396,7 +399,8 @@ bool generate_internal(const GenerationRequest & req,
     }
 
     ensure_backend_init();
-    
+    LOGI("generate_internal: begin prompt_len=%zu system_len=%zu max_tokens=%d", req.prompt.size(), req.system_prompt.size(), req.max_tokens);
+
     // Reset abort flag for new generation
     g_state.should_abort.store(false, std::memory_order_relaxed);
     
@@ -423,6 +427,7 @@ bool generate_internal(const GenerationRequest & req,
         summary.reason = StopReason::Error;
         return false;
     }
+    LOGI("generate_internal: tokenized prompt_tokens=%d", static_cast<int>(prompt_tokens.size()));
 
     llama_batch prefill = llama_batch_get_one(prompt_tokens.data(), static_cast<int32_t>(prompt_tokens.size()));
 
@@ -433,6 +438,7 @@ bool generate_internal(const GenerationRequest & req,
         summary.reason = StopReason::Error;
         return false;
     }
+    LOGI("generate_internal: prefill complete ctx=%d", g_state.n_ctx);
     const double t_prefill_end_ms = llama_time_us() / 1000.0;
 
     auto sparams = llama_sampler_chain_default_params();
@@ -469,6 +475,7 @@ bool generate_internal(const GenerationRequest & req,
     for (int i = 0; i < req.max_tokens; ++i) {
         // Check abort flag before each token generation
         if (g_state.should_abort.load(std::memory_order_relaxed)) {
+            LOGI("generate_internal: abort flag raised after %d tokens", i);
             summary.reason = StopReason::Error;
             summary.metrics.truncated = true;
             break;
@@ -478,6 +485,7 @@ bool generate_internal(const GenerationRequest & req,
         llama_sampler_accept(sampler, token);
 
         if (llama_vocab_is_eog(vocab, token)) {
+            LOGI("generate_internal: received EOS token after %d tokens", i);
             summary.reason = StopReason::Eos;
             break;
         }
@@ -494,6 +502,7 @@ bool generate_internal(const GenerationRequest & req,
         std::string emit = stop_buffer.push(piece, hit_stop, matched_stop);
         if (!emit.empty()) {
             if (!emit_chunk(stream, emit, false)) {
+                LOGE("generate_internal: emit_chunk failed after %d tokens", i);
                 summary.reason = StopReason::Error;
                 break;
             }
@@ -504,6 +513,7 @@ bool generate_internal(const GenerationRequest & req,
 
         if (summary.metrics.generation_tokens == 0) {
             summary.metrics.ttfs_ms = llama_time_us() / 1000.0 - t_start_ms;
+            LOGI("generate_internal: first token emitted ttfs_ms=%.2f", summary.metrics.ttfs_ms);
         }
         summary.metrics.generation_tokens += 1;
 
@@ -517,12 +527,19 @@ bool generate_internal(const GenerationRequest & req,
         }
 
         if (hit_stop) {
+            LOGI("generate_internal: stop sequence '%s' at token %d", matched_stop.c_str(), i);
             summary.reason = StopReason::StopSequence;
             summary.stop_sequence = matched_stop;
             break;
         }
+
+        if (i < 3 || (i + 1) % 32 == 0) {
+            LOGI("generate_internal: streamed token %d piece_len=%zu", i + 1, piece.size());
+        }
     }
 
+    LOGI("generate_internal: sampler finalize tokens=%d", summary.metrics.generation_tokens);
+    llama_perf_sampler_data perf_sampler = llama_perf_sampler(sampler);
     llama_sampler_free(sampler);
 
     if (summary.reason == StopReason::None) {
@@ -547,6 +564,7 @@ bool generate_internal(const GenerationRequest & req,
     if (!tail.empty() && summary.reason != StopReason::Error) {
         if (!emit_chunk(stream, tail, false)) {
             summary.reason = StopReason::Error;
+            LOGE("generate_internal: tail emit failed");
         } else if (out_text) {
             out_text->append(tail);
         }
@@ -557,6 +575,29 @@ bool generate_internal(const GenerationRequest & req,
         emit_chunk(stream, "", true);
         done_guard.dismiss();
     }
+    LOGI("generate_internal: fetching perf context tokens=%d", summary.metrics.generation_tokens);
+    llama_perf_context_data perf_ctx = llama_perf_context(g_state.ctx);
+    LOGI("generate_internal: perf context fetched prompt=%d eval=%d", perf_ctx.n_p_eval, perf_ctx.n_eval);
+    double prompt_tps = perf_ctx.n_p_eval > 0 && perf_ctx.t_p_eval_ms > 0.0
+            ? (perf_ctx.n_p_eval * 1000.0) / perf_ctx.t_p_eval_ms
+            : 0.0;
+    double eval_tps = perf_ctx.n_eval > 0 && perf_ctx.t_eval_ms > 0.0
+            ? (perf_ctx.n_eval * 1000.0) / perf_ctx.t_eval_ms
+            : 0.0;
+    double sample_tps = perf_sampler.n_sample > 0 && perf_sampler.t_sample_ms > 0.0
+            ? (perf_sampler.n_sample * 1000.0) / perf_sampler.t_sample_ms
+            : 0.0;
+
+    LOGI("generate_internal: done reason=%d tokens=%d ttfs=%.2f total_ms=%.2f truncated=%d eval_tps=%.2f prompt_tps=%.2f sample_tps=%.2f",
+         static_cast<int>(summary.reason),
+         summary.metrics.generation_tokens,
+         summary.metrics.ttfs_ms,
+         summary.metrics.total_ms,
+         summary.metrics.truncated ? 1 : 0,
+         eval_tps,
+         prompt_tps,
+         sample_tps);
+    llama_perf_context_reset(g_state.ctx);
     return summary.success;
 }
 
@@ -693,6 +734,14 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
         cparams.n_ubatch = std::min(128U, cparams.n_batch / 4);
     }
 
+    LOGI("loadModel: context n_ctx=%d threads=%d batch=%u ubatch=%u offload_kqv=%d use_vulkan=%d",
+         cparams.n_ctx,
+         cparams.n_threads,
+         cparams.n_batch,
+         cparams.n_ubatch,
+         cparams.offload_kqv ? 1 : 0,
+         useVulkan ? 1 : 0);
+
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         LOGE("failed to create llama context");
@@ -779,6 +828,8 @@ Java_com_peerchat_engine_EngineNative_generateStream(JNIEnv * env, jobject thiz,
     (void) thiz;
     (void) jTemplate;
 
+    LOGI("generateStream: entry temp=%.2f topP=%.2f topK=%d maxTokens=%d", temperature, topP, topK, maxTokens);
+
     StreamContext stream{};
     if (jCallback) {
         stream.env = env;
@@ -809,6 +860,7 @@ Java_com_peerchat_engine_EngineNative_generateStream(JNIEnv * env, jobject thiz,
 
     GenerationSummary summary;
     generate_internal(req, jCallback ? &stream : nullptr, nullptr, summary);
+    LOGI("generateStream: exit success=%d reason=%d tokens=%d", summary.success ? 1 : 0, static_cast<int>(summary.reason), summary.metrics.generation_tokens);
 }
 
 extern "C" JNIEXPORT jobjectArray JNICALL

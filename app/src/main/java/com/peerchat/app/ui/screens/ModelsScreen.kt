@@ -6,8 +6,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -48,7 +48,6 @@ import com.peerchat.app.ui.components.GlobalToastManager
 import com.peerchat.app.ui.theme.LocalSpacing
 import com.peerchat.data.db.ModelManifest
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.foundation.layout.Column
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,7 +90,7 @@ fun ModelsScreen(
                 actions = {
                     IconButton(onClick = { viewModel.showBenchmarkDialog() }) {
                         Icon(
-                            imageVector = Icons.Default.Science,
+                            imageVector = Icons.Filled.Science,
                             contentDescription = "Run Benchmark"
                         )
                     }

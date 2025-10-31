@@ -1,27 +1,71 @@
 package com.peerchat.app.engine
 
+import android.content.Context
 import android.net.Uri
 import com.peerchat.app.data.OperationResult
+import com.peerchat.app.util.Logger
 import com.peerchat.data.db.ModelManifest
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 
 /**
  * High-level service for model management operations.
- * Provides an abstraction over ModelRepository with additional utility methods.
+ * Provides an abstraction over ModelRepository with robust loading, preloading, and health checking.
  */
 class ModelService(
+    private val context: Context,
     private val repository: ModelRepository
 ) {
+    // Initialize robust loading components
+    private val preloader = ModelPreloader(context, repository)
+    private val healthChecker = ModelHealthChecker()
+    private val loadManager = ModelLoadManager(context, repository, preloader, healthChecker)
+
+    init {
+        // Start preloader service
+        preloader.start()
+
+        Logger.i("ModelService: initialized with robust loading components")
+    }
     /**
-     * Loads a model with the given configuration.
+     * Loads a model with robust error recovery, progress tracking, and health checking.
      *
      * @param config The engine configuration including model path and parameters.
+     * @param onProgress Optional callback for load progress updates.
+     * @param onHealthCheck Optional callback for health check results.
      * @return Operation result with manifest on success or error message on failure.
      */
-    suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = repository.loadModel(config)
+    suspend fun loadModel(
+        config: StoredEngineConfig,
+        onProgress: ((ModelLoadManager.ModelLoadProgress) -> Unit)? = null,
+        onHealthCheck: ((ModelHealthChecker.HealthResult) -> Unit)? = null
+    ): OperationResult<ModelManifest> {
+        // Find manifest for this config
+        val manifests = repository.listManifests()
+        val manifest = manifests.firstOrNull { it.filePath == config.modelPath }
+            ?: return OperationResult.Failure("Model manifest not found for path: ${config.modelPath}")
+
+        return loadManager.loadModel(manifest, config, onProgress, onHealthCheck)
+    }
 
     /**
-     * Loads a model asynchronously with progress callbacks.
+     * Loads a model by manifest with robust error recovery and progress tracking.
+     *
+     * @param manifest The model manifest to load.
+     * @param config The engine configuration.
+     * @param onProgress Optional callback for load progress updates.
+     * @param onHealthCheck Optional callback for health check results.
+     * @return Operation result with manifest on success or error message on failure.
+     */
+    suspend fun loadModel(
+        manifest: ModelManifest,
+        config: StoredEngineConfig,
+        onProgress: ((ModelLoadManager.ModelLoadProgress) -> Unit)? = null,
+        onHealthCheck: ((ModelHealthChecker.HealthResult) -> Unit)? = null
+    ): OperationResult<ModelManifest> = loadManager.loadModel(manifest, config, onProgress, onHealthCheck)
+
+    /**
+     * Loads a model asynchronously with progress callbacks (legacy compatibility).
      *
      * @param config The engine configuration.
      * @param onProgress Callback invoked with progress messages.
@@ -31,15 +75,9 @@ class ModelService(
         config: StoredEngineConfig,
         onProgress: (String) -> Unit = {}
     ): OperationResult<ModelManifest> {
-        onProgress("Preparing model load...")
-        val result = repository.loadModel(config)
-        when (result) {
-            is OperationResult.Success -> onProgress(
-                result.message.ifBlank { "Model loaded successfully" }
-            )
-            is OperationResult.Failure -> onProgress("Failed to load model: ${result.error}")
-        }
-        return result
+        return loadModel(config, onProgress = { progress: ModelLoadManager.ModelLoadProgress ->
+            onProgress(progress.message)
+        })
     }
 
     /**
@@ -134,4 +172,131 @@ class ModelService(
             "freeMemory" to runtime.freeMemory()
         )
     }
+
+    // Robust loading features
+
+    /**
+     * Request background preloading of a model.
+     *
+     * @param manifest The model manifest to preload.
+     * @param priority Priority level (lower = higher priority).
+     * @param config Optional configuration for preloading.
+     */
+    fun requestPreload(manifest: ModelManifest, priority: Int = 0, config: StoredEngineConfig? = null) {
+        preloader.requestPreload(manifest, priority, config)
+    }
+
+    /**
+     * Mark a model as recently used to influence preload priorities.
+     *
+     * @param manifest The model manifest that was used.
+     */
+    fun markRecentlyUsed(manifest: ModelManifest) {
+        preloader.markRecentlyUsed(manifest)
+    }
+
+    /**
+     * Check if a model is currently preloaded.
+     *
+     * @param modelPath The model file path.
+     * @return true if the model is preloaded.
+     */
+    fun isPreloaded(modelPath: String): Boolean = preloader.isPreloaded(modelPath)
+
+    /**
+     * Get preload status for a specific model.
+     *
+     * @param modelPath The model file path.
+     * @return Current preload status or null if not being preloaded.
+     */
+    fun getPreloadStatus(modelPath: String): ModelPreloader.PreloadStatus? =
+        preloader.getPreloadStatus(modelPath)
+
+    /**
+     * Get preload statistics.
+     *
+     * @return Statistics about preloading performance.
+     */
+    fun getPreloadStats(): ModelPreloader.PreloadStats = preloader.getStats()
+
+    /**
+     * Get a flow of preload statuses.
+     *
+     * @return Flow emitting maps of model paths to their preload statuses.
+     */
+    fun getPreloadStatusesFlow(): Flow<Map<String, ModelPreloader.PreloadStatus>> =
+        preloader.preloadStatus
+
+    /**
+     * Perform a comprehensive health check on the currently loaded model.
+     *
+     * @return Health check result.
+     */
+    suspend fun checkCurrentModelHealth(): ModelHealthChecker.HealthResult =
+        healthChecker.checkCurrentModel()
+
+    /**
+     * Perform a quick smoke test on the currently loaded model.
+     *
+     * @return true if the basic test passes.
+     */
+    suspend fun smokeTestCurrentModel(): Boolean = healthChecker.smokeTest()
+
+    /**
+     * Cancel the current model loading operation.
+     */
+    fun cancelCurrentLoad() {
+        loadManager.cancelLoad()
+    }
+
+    /**
+     * Check if a model loading operation is currently in progress.
+     *
+     * @return true if loading is in progress.
+     */
+    fun isLoadInProgress(): Boolean = loadManager.isLoadInProgress()
+
+    /**
+     * Get current load progress.
+     *
+     * @return Current load progress or null if no load in progress.
+     */
+    fun getCurrentLoadProgress(): ModelLoadManager.ModelLoadProgress? =
+        loadManager.getCurrentProgress()
+
+    /**
+     * Get a flow of load progress updates.
+     *
+     * @return Flow emitting load progress updates.
+     */
+    fun getLoadProgressFlow(): Flow<ModelLoadManager.ModelLoadProgress?> =
+        loadManager.loadProgress
+
+    /**
+     * Get a combined flow of all loading-related statuses.
+     *
+     * @return Flow combining load progress and preload statuses.
+     */
+    fun getLoadingStatusFlow(): Flow<ModelLoadingStatus> =
+        combine(
+            loadManager.loadProgress,
+            preloader.preloadStatus
+        ) { loadProgress, preloadStatuses ->
+            ModelLoadingStatus(
+                loadProgress = loadProgress,
+                preloadStatuses = preloadStatuses,
+                isLoadInProgress = loadProgress != null,
+                preloadStats = preloader.getStats()
+            )
+        }
+
+    /**
+     * Combined status of all loading operations.
+     */
+    data class ModelLoadingStatus(
+        val loadProgress: ModelLoadManager.ModelLoadProgress?,
+        val preloadStatuses: Map<String, ModelPreloader.PreloadStatus>,
+        val isLoadInProgress: Boolean,
+        val preloadStats: ModelPreloader.PreloadStats
+    )
 }

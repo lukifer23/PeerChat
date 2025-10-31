@@ -17,6 +17,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -66,6 +67,8 @@ fun SettingsDialog(
     onSelectManifest: (ModelManifest) -> Unit,
     onDeleteManifest: (ModelManifest) -> Unit,
     onTemplateSelect: (String?) -> Unit = {},
+    onRebuildAnnIndex: () -> Unit,
+    onDocScoreCacheChange: (Int) -> Unit,
 ) {
     AppDialog(
         title = "Settings",
@@ -180,6 +183,45 @@ fun SettingsDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+                HorizontalDivider()
+                Text("RAG Index", style = MaterialTheme.typography.titleMedium)
+                val ragState = homeState.rag
+                Text(
+                    "Documents: ${ragState.totalDocuments} • Chunks: ${ragState.totalChunks} • Embeddings: ${ragState.totalEmbeddings}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Average chunk tokens: ${String.format(Locale.US, "%.1f", ragState.averageChunkTokens)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Doc-score cache: ${ragState.docScoreCacheSize}/${ragState.docScoreCacheMax}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                var docScoreTarget by remember(ragState.docScoreCacheMax) {
+                    mutableStateOf(ragState.docScoreCacheMax)
+                }
+                Slider(
+                    value = docScoreTarget.toFloat(),
+                    onValueChange = { value ->
+                        val clamped = value.toInt().coerceIn(200, 8000)
+                        docScoreTarget = clamped
+                    },
+                    valueRange = 200f..8000f,
+                    steps = 58,
+                    onValueChangeFinished = { onDocScoreCacheChange(docScoreTarget) }
+                )
+                Text(
+                    "Cache max entries: $docScoreTarget",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(onClick = onRebuildAnnIndex) {
+                    Text("Rebuild ANN Index")
                 }
                 HorizontalDivider()
                 Text("Installed Models", style = MaterialTheme.typography.titleMedium)
@@ -554,4 +596,3 @@ fun openUrl(context: android.content.Context, url: String) {
         context.startActivity(intent)
     }
 }
-

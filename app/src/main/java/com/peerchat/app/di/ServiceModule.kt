@@ -36,8 +36,11 @@ object ServiceModule {
 
     @Provides
     @Singleton
-    fun provideModelService(modelRepository: ModelRepository): ModelService {
-        return ModelService(modelRepository)
+    fun provideModelService(
+        @ApplicationContext context: Context,
+        modelRepository: ModelRepository
+    ): ModelService {
+        return ModelService(context, modelRepository)
     }
 
     @Provides

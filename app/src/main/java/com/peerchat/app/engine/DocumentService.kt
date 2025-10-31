@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.rag.AnnIndexWorkManager
 import com.peerchat.app.docs.OcrService
 import com.peerchat.data.db.Document
 import com.peerchat.rag.RagService
@@ -78,6 +79,7 @@ class DocumentService(
 
             // Index the document for RAG
             RagService.indexDocument(repository.database(), indexedDocument, text)
+            AnnIndexWorkManager.scheduleRebuild(context)
 
             val message = if (mime.startsWith("image/")) {
                 "Image processed and indexed"
@@ -96,6 +98,7 @@ class DocumentService(
     suspend fun deleteDocument(documentId: Long): OperationResult<Unit> = withContext(Dispatchers.IO) {
         try {
             repository.deleteDocument(documentId)
+            AnnIndexWorkManager.scheduleRebuild(context)
             OperationResult.Success(Unit, "Document deleted")
         } catch (e: Exception) {
             OperationResult.Failure("Delete error: ${e.message}")
@@ -113,6 +116,7 @@ class DocumentService(
             }
             val text = String(document.textBytes)
             RagService.indexDocument(repository.database(), document, text)
+            AnnIndexWorkManager.scheduleRebuild(context)
             OperationResult.Success(document, "Document re-indexed")
         } catch (e: Exception) {
             OperationResult.Failure("Re-index error: ${e.message}")

@@ -41,7 +41,11 @@ class ModelRepository(
 ) {
     private val appContext = context.applicationContext as Application
 
-    // KV cache
+    // Performance optimizations
+    private val gpuMemoryManager = GpuMemoryManager(appContext)
+    private val kvCacheOptimizer = KvCacheOptimizer(maxCacheSizeBytes = maxCacheBytes, maxCacheEntries = maxCacheFiles)
+
+    // Legacy KV cache (keeping for compatibility, but optimized version preferred)
     private val cacheDir: File by lazy { File(appContext.filesDir, "kv_cache").apply { if (!exists()) mkdirs() } }
     private fun stateFile(chatId: Long): File = File(cacheDir, "chat_${chatId}.kvc")
     private val cacheLock = ReentrantLock()
@@ -203,7 +207,8 @@ class ModelRepository(
                 return@withContext OperationResult.Failure(validationResult.error)
             }
 
-            val attempts = buildLoadAttempts(config)
+            val manifest = (validationResult as OperationResult.Success<ModelManifest>).data
+            val attempts = buildLoadAttempts(config, manifest)
             val failureReasons = mutableListOf<String>()
 
             Logger.i(
@@ -403,6 +408,7 @@ class ModelRepository(
 
     suspend fun verifyManifest(manifest: ModelManifest): Boolean = manifestService.verify(manifest)
     fun getManifestsFlow(): Flow<List<ModelManifest>> = manifestService.manifestsFlow()
+    suspend fun listManifests(): List<ModelManifest> = manifestService.list()
     suspend fun getActiveManifest(): ModelManifest? {
         val config = ModelConfigStore.load(appContext) ?: return null
         return manifestService.list().firstOrNull { it.filePath == config.modelPath }
@@ -596,25 +602,48 @@ class ModelRepository(
         }
     }
 
-    private fun buildLoadAttempts(initial: StoredEngineConfig): List<LoadAttempt> {
+    private suspend fun buildLoadAttempts(initial: StoredEngineConfig, manifest: ModelManifest): List<LoadAttempt> {
         val attempts = LinkedHashMap<StoredEngineConfig, String>()
-        attempts[initial] = "primary"
-        if (initial.useVulkan) {
-            if (initial.gpuLayers > 0) {
-                val reducedGpuLayers = (initial.gpuLayers / 2).coerceAtLeast(1)
-                if (reducedGpuLayers < initial.gpuLayers) {
-                    attempts[initial.copy(gpuLayers = reducedGpuLayers)] = "reduced_gpu_layers"
-                }
-            }
-            attempts[initial.copy(useVulkan = false, gpuLayers = 0)] = "cpu_fallback"
+
+        // Get GPU memory profile for intelligent layer allocation
+        val gpuProfile = gpuMemoryManager.calculateOptimalLayers(manifest, initial.contextLength)
+
+        // Primary attempt with intelligent GPU allocation
+        val optimizedConfig = if (gpuProfile.canUseGpu) {
+            val adaptiveLayers = gpuMemoryManager.getAdaptiveLayers(manifest, initial.gpuLayers, initial.contextLength)
+            initial.copy(
+                gpuLayers = adaptiveLayers,
+                useVulkan = adaptiveLayers > 0
+            )
+        } else {
+            initial.copy(gpuLayers = 0, useVulkan = false)
         }
+
+        attempts[optimizedConfig] = "optimized"
+
+        // Fallback attempts
+        if (gpuProfile.canUseGpu && optimizedConfig.gpuLayers > 5) {
+            // Try with fewer layers if we have many
+            val reducedLayers = (optimizedConfig.gpuLayers / 2).coerceAtLeast(5)
+            attempts[optimizedConfig.copy(gpuLayers = reducedLayers)] = "reduced_gpu_layers"
+        }
+
+        // CPU fallback
+        attempts[optimizedConfig.copy(useVulkan = false, gpuLayers = 0)] = "cpu_fallback"
+
+        Logger.i("buildLoadAttempts: generated attempts", mapOf(
+            "attemptCount" to attempts.size,
+            "gpuProfile" to gpuProfile.reasoning.take(100) + if (gpuProfile.reasoning.length > 100) "..." else "",
+            "recommendedLayers" to gpuProfile.recommendedGpuLayers
+        ))
+
         return attempts.map { LoadAttempt(it.key, it.value) }
     }
 
     private data class LoadAttempt(val config: StoredEngineConfig, val reason: String)
 
     private fun LoadAttempt.readableReason(): String = when (reason) {
-        "primary" -> "primary configuration"
+        "optimized" -> "optimized configuration"
         "reduced_gpu_layers" -> "reduced GPU layers"
         "cpu_fallback" -> "CPU execution"
         else -> reason

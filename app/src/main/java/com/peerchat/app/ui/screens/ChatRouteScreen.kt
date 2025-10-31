@@ -165,7 +165,9 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
             onUnloadModel = homeViewModel::unloadModel,
             onSelectManifest = homeViewModel::activateManifest,
             onDeleteManifest = homeViewModel::deleteManifest,
-            onTemplateSelect = chatViewModel::updateTemplate
+            onTemplateSelect = chatViewModel::updateTemplate,
+            onRebuildAnnIndex = homeViewModel::rebuildAnnIndex,
+            onDocScoreCacheChange = homeViewModel::updateDocScoreCacheLimit
         )
     }
 }

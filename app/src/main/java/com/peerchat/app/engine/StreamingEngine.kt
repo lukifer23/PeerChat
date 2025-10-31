@@ -17,7 +17,25 @@ sealed interface EngineStreamEvent {
 }
 
 object StreamingEngine {
+    // Optimized streaming with batching and backpressure management
+    private val optimizer = StreamingOptimizer()
     fun stream(
+        prompt: String,
+        systemPrompt: String?,
+        template: String?,
+        temperature: Float,
+        topP: Float,
+        topK: Int,
+        maxTokens: Int,
+        stop: Array<String>
+    ): Flow<EngineStreamEvent> {
+        // Get raw stream and optimize it
+        val rawStream = createRawStream(prompt, systemPrompt, template, temperature, topP, topK, maxTokens, stop)
+        return optimizer.optimizeStream(rawStream)
+    }
+
+    // Raw streaming without optimization (for internal use)
+    private fun createRawStream(
         prompt: String,
         systemPrompt: String?,
         template: String?,
@@ -55,12 +73,21 @@ object StreamingEngine {
                         )
                     }
                     tokenChars += chunk.length
+                    Logger.i(
+                        "StreamingEngine: chunk",
+                        mapOf("chars" to chunk.length, "totalChars" to tokenChars)
+                    )
                     val result = trySendBlocking(EngineStreamEvent.Token(chunk))
                     if (result.isFailure) {
+                        Logger.w(
+                            "StreamingEngine: chunk_delivery_failed",
+                            mapOf("reason" to (result.exceptionOrNull()?.message ?: "backpressure"))
+                        )
                         EngineNative.abort()
                     }
                 }
             } else {
+                Logger.i("StreamingEngine: done_chunk_received", mapOf("totalChars" to tokenChars))
                 val metrics = EngineRuntime.updateMetricsFromNative()
                 completed.set(true)
                 trySendBlocking(EngineStreamEvent.Terminal(metrics))

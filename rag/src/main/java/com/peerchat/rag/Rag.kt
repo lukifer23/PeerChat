@@ -27,9 +27,22 @@ private val docScoreCache = object : LinkedHashMap<Long, CandidateScore>(512, 0.
 private const val MAX_TOKEN_CACHE_ENTRIES = 5000
 private const val MAX_EMBEDDING_CACHE_ENTRIES = 1500
 private const val MAX_EMBEDDING_CACHE_BYTES: Long = 32L * 1024L * 1024L // ~32 MB
-private const val MAX_DOC_SCORE_ENTRIES = 2000
+private const val DEFAULT_DOC_SCORE_ENTRIES = 2000
+@Volatile
+private var docScoreMaxEntries = DEFAULT_DOC_SCORE_ENTRIES
 
 private data class CandidateScore(var score: Float, var updatedAtMs: Long)
+
+data class RagAnnSnapshot(
+    val numPlanes: Int,
+    val bucketSize: Int,
+    val fallbackSize: Int,
+    val records: List<SerializedVector>
+)
+
+data class SerializedVector(val id: Long, val vector: FloatArray, val norm: Float)
+
+private data class VectorRecord(val id: Long, val vector: FloatArray, val norm: Float)
 
 fun interface RagEmbeddingIndex {
     fun query(query: FloatArray, topK: Int): List<Long>
@@ -124,6 +137,8 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
 
 object RagService {
 
+    data class DocScoreStats(val size: Int, val maxSize: Int)
+
     fun registerAnnIndex(index: (FloatArray, Int) -> List<Long>) {
         EmbeddingIndexRegistry.register(RagEmbeddingIndex { query, topK -> index(query, topK) })
     }
@@ -134,6 +149,102 @@ object RagService {
 
     fun clearAnnIndex() {
         EmbeddingIndexRegistry.clear()
+    }
+
+    suspend fun rebuildAnnIndex(
+        db: PeerDatabase,
+        maxEmbeddings: Int = 10_000,
+        numPlanes: Int = 12,
+        bucketSize: Int = 256,
+        fallbackSize: Int = 512
+    ): RagAnnSnapshot {
+        val pageSize = 512
+        val records = ArrayList<VectorRecord>(min(maxEmbeddings, 2048))
+        var offset = 0
+        while (records.size < maxEmbeddings) {
+            val batch = db.embeddingDao().listPaginated(pageSize, offset)
+            if (batch.isEmpty()) break
+            batch.forEach { embedding ->
+                if (records.size >= maxEmbeddings) return@forEach
+                val vector = bytesToFloatArray(embedding.vector)
+                if (vector.isNotEmpty()) {
+                    val norm = vectorNorm(vector)
+                    if (norm > 0f) {
+                        records.add(VectorRecord(embedding.id, vector, norm))
+                    }
+                }
+            }
+            offset += batch.size
+        }
+
+        if (records.isEmpty()) {
+            clearAnnIndex()
+            return RagAnnSnapshot(numPlanes, bucketSize, fallbackSize, emptyList())
+        }
+
+        registerRecords(records, numPlanes, bucketSize, fallbackSize)
+
+        return RagAnnSnapshot(
+            numPlanes = numPlanes,
+            bucketSize = bucketSize,
+            fallbackSize = fallbackSize,
+            records = records.map { SerializedVector(it.id, it.vector, it.norm) }
+        )
+    }
+
+    fun configureDocScoreCache(maxEntries: Int) {
+        val target = maxEntries.coerceAtLeast(64)
+        docScoreMaxEntries = target
+        cacheLock.write { trimDocScoresLocked() }
+    }
+
+    fun docScoreCacheStats(): DocScoreStats {
+        cacheLock.read {
+            return DocScoreStats(
+                size = docScoreCache.size,
+                maxSize = docScoreMaxEntries
+            )
+        }
+    }
+
+    fun loadAnnSnapshot(snapshot: RagAnnSnapshot) {
+        val records = snapshot.records.map { VectorRecord(it.id, it.vector, it.norm) }
+        registerRecords(records, snapshot.numPlanes, snapshot.bucketSize, snapshot.fallbackSize)
+    }
+
+    private fun registerRecords(
+        records: List<VectorRecord>,
+        numPlanes: Int,
+        bucketSize: Int,
+        fallbackSize: Int
+    ) {
+        if (records.isEmpty()) {
+            clearAnnIndex()
+            return
+        }
+        val annIndex = RagEmbeddingIndex { query, topK ->
+            if (query.isEmpty()) return@RagEmbeddingIndex emptyList()
+            val qNorm = vectorNorm(query)
+            if (qNorm <= 0f) return@RagEmbeddingIndex emptyList()
+
+            val breadthScale = max(2, numPlanes.coerceAtLeast(1) / 4)
+            val searchBreadth = max(
+                topK.coerceAtLeast(1) * breadthScale,
+                max(bucketSize.coerceAtLeast(topK), fallbackSize)
+            )
+
+            records.asSequence()
+                .map { record ->
+                    val score = cosine(query, record.vector, record.norm)
+                    record.id to score
+                }
+                .sortedByDescending { it.second }
+                .take(searchBreadth)
+                .take(topK.coerceAtLeast(1))
+                .map { it.first }
+                .toList()
+        }
+        registerAnnIndex(annIndex)
     }
 
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
@@ -238,8 +349,6 @@ object RagService {
             .distinct()
 
         for ((rank, chunk) in lexicalMatches.withIndex()) {
-            var score = 0f
-
             // Base rank score (lower is better rank)
             val rankScore = 1f - (rank.toFloat() / lexicalMatches.size.toFloat())
 
@@ -256,11 +365,12 @@ object RagService {
             // Position bonus (earlier chunks in document get slight preference)
             val positionBonus = if (chunk.start < 1000) 0.1f else 0f
 
-            score = rankScore * 0.5f + termFrequency * 0.3f + exactMatch + positionBonus
+            val score = rankScore * 0.5f + termFrequency * 0.3f + exactMatch + positionBonus
 
-            if (chunk.embeddingId != null && score > 0.05f) { // Only keep meaningful scores
-                lexicalScores[chunk.embeddingId!!] = score
-                chunk.docId?.let { recordDocScore(it, score) }
+            val embeddingId = chunk.embeddingId ?: continue
+            if (score > 0.05f) { // Only keep meaningful scores
+                lexicalScores[embeddingId] = score
+                recordDocScore(chunk.docId, score)
             }
         }
 
@@ -636,7 +746,6 @@ private fun bytesToFloatArray(b: ByteArray): FloatArray {
     for (i in out.indices) out[i] = bb.getFloat()
     return out
 }
-
 private fun trimTokenCacheLocked() {
     if (tokenCountCache.size <= MAX_TOKEN_CACHE_ENTRIES) return
     val iterator = tokenCountCache.entries.iterator()
@@ -684,9 +793,9 @@ private fun docScore(docId: Long): Float {
 }
 
 private fun trimDocScoresLocked() {
-    if (docScoreCache.size <= MAX_DOC_SCORE_ENTRIES) return
+    if (docScoreCache.size <= docScoreMaxEntries) return
     val iterator = docScoreCache.entries.iterator()
-    while (docScoreCache.size > MAX_DOC_SCORE_ENTRIES && iterator.hasNext()) {
+    while (docScoreCache.size > docScoreMaxEntries && iterator.hasNext()) {
         iterator.next()
         iterator.remove()
     }

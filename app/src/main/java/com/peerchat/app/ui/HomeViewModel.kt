@@ -7,11 +7,13 @@ import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.engine.DocumentService
 import com.peerchat.app.engine.ModelConfigStore
+import com.peerchat.app.engine.ModelHealthChecker
 import com.peerchat.app.engine.ModelRepository
 import com.peerchat.app.engine.ModelService
 import com.peerchat.app.engine.ModelStateCache
 import com.peerchat.app.engine.SearchService
 import com.peerchat.app.engine.StoredEngineConfig
+import com.peerchat.app.rag.AnnIndexWorkManager
 import com.peerchat.app.ui.HomeEvent.Toast
 import com.peerchat.app.ui.DocumentState
 import com.peerchat.app.ui.HomeUiState
@@ -21,6 +23,7 @@ import com.peerchat.app.ui.SearchResultItem.ResultType
 import com.peerchat.data.db.Chat
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.engine.EngineRuntime
+import com.peerchat.rag.RagService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +41,8 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.io.File
 import javax.inject.Inject
 
@@ -61,6 +66,9 @@ class HomeViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     private val selectedFolderId = MutableStateFlow<Long?>(null)
 
+    // Robust loading progress tracking
+    private var currentLoadProgressJob: kotlinx.coroutines.Job? = null
+
     override fun emitToast(message: String, isError: Boolean) {
         _events.tryEmit(Toast(message, isError))
     }
@@ -72,7 +80,9 @@ class HomeViewModel @Inject constructor(
         observeEngine()
         observeManifests()
         observeCacheStats()
+        observeLoadingStatus()
         restoreStoredConfig()
+        observeRagRuntime()
     }
 
     // ------------------------------------------------------------------------
@@ -164,6 +174,30 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private fun observeRagRuntime() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                val stats = runCatching {
+                    RagService.getIndexStats(repository.database())
+                }.getOrNull()
+                val cacheStats = runCatching { RagService.docScoreCacheStats() }.getOrNull()
+                if (stats != null && cacheStats != null) {
+                    updateRagState {
+                        it.copy(
+                            totalDocuments = stats.totalDocuments,
+                            totalChunks = stats.totalChunks,
+                            totalEmbeddings = stats.totalEmbeddings,
+                            averageChunkTokens = stats.averageChunkTokens,
+                            docScoreCacheSize = cacheStats.size,
+                            docScoreCacheMax = cacheStats.maxSize
+                        )
+                    }
+                }
+                delay(15_000)
+            }
+        }
+    }
+
     private fun observeEngine() {
         viewModelScope.launch {
             EngineRuntime.status.collect { status ->
@@ -228,6 +262,21 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             modelCache.stats().collectLatest { stats ->
                 updateModelState { it.copy(cacheStats = stats) }
+            }
+        }
+    }
+
+    private fun observeLoadingStatus() {
+        viewModelScope.launch {
+            modelService.getLoadingStatusFlow().collectLatest { status ->
+                updateModelState {
+                    it.copy(
+                        isLoadingModel = status.isLoadInProgress,
+                        loadProgress = status.loadProgress,
+                        preloadStatuses = status.preloadStatuses,
+                        preloadStats = status.preloadStats
+                    )
+                }
             }
         }
     }
@@ -464,9 +513,30 @@ class HomeViewModel @Inject constructor(
     fun updateUseVulkan(useVulkan: Boolean) =
         updateModelState { it.copy(useVulkan = useVulkan) }
 
+    fun rebuildAnnIndex() {
+        AnnIndexWorkManager.scheduleRebuild(appContext)
+        emitToast("Scheduled ANN rebuild", false)
+    }
+
+    fun updateDocScoreCacheLimit(maxEntries: Int) {
+        RagService.configureDocScoreCache(maxEntries)
+        val stats = RagService.docScoreCacheStats()
+        updateRagState {
+            it.copy(
+                docScoreCacheMax = stats.maxSize,
+                docScoreCacheSize = stats.size
+            )
+        }
+    }
+
     fun loadModel() {
         val config = parseConfigFromState() ?: return
-        viewModelScope.launch { loadModelInternal(config) }
+        loadModelWithProgress(config)
+    }
+
+    fun cancelLoadModel() {
+        modelService.cancelCurrentLoad()
+        emitToast("Model loading cancelled", false)
     }
 
     fun unloadModel() {
@@ -537,18 +607,52 @@ class HomeViewModel @Inject constructor(
     // Internal helpers
     // ------------------------------------------------------------------------
 
-    private suspend fun loadModelInternal(config: StoredEngineConfig) {
-        updateModelState { it.copy(importingModel = true) }
-        val result = modelRepository.loadModel(config)
-        updateModelState { it.copy(importingModel = false) }
+    private fun loadModelWithProgress(config: StoredEngineConfig) {
+        // Cancel any existing load
+        currentLoadProgressJob?.cancel()
 
-        when (result) {
-            is OperationResult.Success -> {
-                refreshStoredConfig()
-                emitToast(result.message, false)
+        currentLoadProgressJob = viewModelScope.launch {
+            val result = modelService.loadModel(
+                config = config,
+                onProgress = { progress ->
+                    // Progress updates are handled via observeLoadingStatus
+                    // Additional UI feedback can be added here if needed
+                },
+                onHealthCheck = { healthResult ->
+                    when (healthResult) {
+                        is ModelHealthChecker.HealthResult.Healthy -> {
+                            emitToast("Model health check passed", false)
+                        }
+                        is ModelHealthChecker.HealthResult.Unhealthy -> {
+                            emitToast("Model health check failed: ${healthResult.failures.firstOrNull()}", true)
+                        }
+                        is ModelHealthChecker.HealthResult.Error -> {
+                            emitToast("Model health check error: ${healthResult.error}", true)
+                        }
+                    }
+                }
+            )
+
+            when (result) {
+                is OperationResult.Success -> {
+                    refreshStoredConfig()
+                    emitToast(result.message, false)
+
+                    // Mark as recently used for intelligent preloading
+                    result.data?.let { manifest ->
+                        modelService.markRecentlyUsed(manifest)
+                    }
+                }
+                is OperationResult.Failure -> {
+                    emitToast(result.error, true)
+                }
             }
-            is OperationResult.Failure -> emitToast(result.error, true)
         }
+    }
+
+    // Legacy method for backward compatibility
+    private suspend fun loadModelInternal(config: StoredEngineConfig) {
+        loadModelWithProgress(config)
     }
 
     private fun refreshStoredConfig() {
@@ -636,6 +740,14 @@ class HomeViewModel @Inject constructor(
     ) {
         _uiState.update { current ->
             current.copy(documents = reducer(current.documents))
+        }
+    }
+
+    private inline fun updateRagState(
+        crossinline reducer: (RagRuntimeState) -> RagRuntimeState
+    ) {
+        _uiState.update { current ->
+            current.copy(rag = reducer(current.rag))
         }
     }
 }
