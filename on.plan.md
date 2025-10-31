@@ -14,11 +14,14 @@
 - **Observability**: persistent metrics (TTFS, TPS, context %, cache hits) per message; structured logs with retention policy.
 
 ## Current Baseline Snapshot
-- Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain; Git history initialized.
+- Android multi-module project (`app`, `engine`, `data`, `rag`, `docs`, `templates`) builds from CLI-only toolchain with Hilt dependency injection.
 - Native engine (llama.cpp) supports Vulkan, structured streaming, metrics capture, KV snapshotting, and GGUF metadata detection exposed through `EngineRuntime`.
-- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, and now maintain per-model configuration with manifest-backed storage and KV cache restore, exposed through a responsive Navigation Compose shell driven by `HomeViewModel` + repository state.
-- Data layer (Room v2) includes manifests, chats, documents, embeddings, and RAG chunks with migrations replacing destructive fallback; RagService still uses naive chunking + cosine retrieval.
-- Model settings dialog allows manual load/unload, thread/Vulkan tuning, and auto-registers imported GGUF files; download workflows, checksum verification, template selection, and ViewModel-backed orchestration remain outstanding.
+- Kotlin runtime + Compose UI manage chat persistence, reasoning capture, per-model configuration with manifest-backed storage, KV cache restore, and robust model loading system exposed through a responsive Navigation Compose shell driven by `HomeViewModel` + repository state.
+- Data layer (Room v4) includes manifests, chats, documents, embeddings, RAG chunks, and benchmark results with migrations and SQLCipher encryption support.
+- Model lifecycle orchestrated through ModelService with ModelLoadManager, ModelPreloader, and ModelHealthChecker for comprehensive loading, preloading, validation, and error recovery.
+- Tokenizer-aware RAG chunking with hybrid search, ANN indexing, and comprehensive caching strategy. ANN uses hash-plane approximation with in-memory and on-disk persistence.
+- WorkManager-based model downloads with resume support, SHA-256 verification, and integrity checks.
+- Template autodetection for Llama 3, ChatML, Qwen, Gemma, Mistral, and InternVL with manual override.
 
 ## Workstreams & Key Tasks
 
@@ -28,37 +31,47 @@
 - Implement KV reuse support (forks, prompt caching), abort callbacks, and structured error surfaces to Kotlin.
 - Add Vulkan capability probing and graceful fallback toggles surfaced to model settings.
 
-### 2. Model Lifecycle & Storage (in progress)
-- `ModelManifest` schema + Room migration in place; manifests auto-register imported/sideloaded GGUF files.
-- Settings dialog lists manifests, computes SHA-256, allows activation/removal, and now includes a WorkManager-backed download catalog.
-- Next: add interactive checksum verification, predefined presets with recommended settings, and template-driven prompt wiring.
+### 2. Model Lifecycle & Storage (completed)
+- `ModelManifest` schema + Room migration implemented; manifests auto-register imported/sideloaded GGUF files.
+- Settings dialog lists manifests, computes SHA-256, allows activation/removal, and includes WorkManager-backed download catalog.
+- Robust loading system with ModelLoadManager, ModelPreloader, and ModelHealthChecker.
+- Template autodetection from GGUF metadata with manual override support.
+- KV cache persistence with LRU eviction and statistics.
+- Completed: checksum verification, health checks, preloading, progress tracking, error recovery.
 
-### 3. Data Persistence & Sync
-- Room migration v1→v2 live (manifests table); need schema validation tests in CI.
-- Add converters for JSON blobs, ByteArray handling, embedding normalization metadata.
-- Implement DAO coverage for metrics updates, message fork lineage, model usage history, document states.
-- Provide repository layer (Kotlin) encapsulating suspend functions/Flows and transaction boundaries.
+### 3. Data Persistence & Sync (in progress)
+- Room migration v4 live with manifests table; SQLCipher encryption support configured.
+- Converters in place for JSON blobs, ByteArray handling, embedding normalization metadata.
+- DAO coverage for all entities including metrics updates, document states, model manifests.
+- Repository layer (PeerChatRepository) encapsulating suspend functions/Flows and transaction boundaries.
+- Next: schema validation tests in CI, comprehensive repository test coverage.
 
-### 4. RAG & Document Pipeline
-- Replace naive whitespace chunking with tokenizer-aware segmentation; persist chunk metadata (positions, token counts).
-- Integrate hnswlib ANN via JNI with on-disk index persistence and rebuild controls.
-- Implement hybrid search (semantic cosine + FTS5) with rank fusion policies and configurable weights.
-- Provide ingestion UI (Documents screen): import queue, status, re-embed, deletion controls, metrics.
-- Support per-chat vs global corpora, context assembly with deduplication, token budgeting, and prompt templating.
+### 4. RAG & Document Pipeline (completed core)
+- Tokenizer-aware chunking with binary search and configurable overlap; chunk metadata persisted.
+- Hash-plane ANN index with on-disk persistence via AnnIndexStorage and rebuild controls via WorkManager.
+- Hybrid search (semantic cosine + FTS5) with rank fusion (70/30) and configurable weights.
+- Documents screen with import, deletion, and metrics.
+- Context assembly with deduplication and prompt templating.
+- Comprehensive caching: embeddings (32MB), token counts (5k entries), document scores (2k entries).
+- Completed: OCR support, PDF extraction, embedding generation, ANN indexing, WorkManager rebuild.
+- Next: native HNSWlib integration for production-scale performance.
 
-### 5. UI/UX Architecture
-- Navigation Compose shell with responsive home layout is in place; Home screen now runs on `HomeViewModel`/`PeerChatRepository`. Expand the pattern to additional screens (Documents, Model Manager, Settings, Reasoning inspector).
-- Extend ViewModel-backed state management (Flows, SavedState) beyond home; lift remaining business logic (downloads, RAG, metrics overlays) out of composables.
-- Build modular chat experience: streaming bubbles, code-specific copy, per-message metrics drawer, reasoning timeline.
-- Add model picker + runtime controls, global search (lexical+semantic), chat fork lineage UI, explicit export/share pipeline.
-- Ensure responsive layout for large screens; extend design system (spacing, typography, palettes) and provide accessibility affordances.
+### 5. UI/UX Architecture (completed core)
+- Navigation Compose shell with responsive home layout in place; Home, Chat, Documents, Models screens implemented.
+- ViewModel-backed state management (Flows, SavedState) with HomeViewModel, ChatViewModel, and service orchestration.
+- Modular chat experience with streaming bubbles, code formatting, per-message metrics, and reasoning visualization.
+- Global search (lexical via FTS5) with results across messages and documents.
+- Material 3 design system with dark high-contrast theme and adaptive layouts.
+- Completed: dialog state management, toast system, error boundaries, loading states, benchmark UI.
+- Next: chat fork lineage UI, export/share pipeline, reasoning timeline enhancement.
 
-### 6. Security & Privacy
-- Store secrets in `EncryptedSharedPreferences`; isolate models/docs in app sandbox.
-- Gate external storage imports with SAF; sanitize filenames, enforce checksums.
-- Provide explicit export pathway (ZIP with manifest) requiring confirmation.
-- Implement crash-safe write patterns (temp files + atomic move) for model/download artifacts.
-- Add logging redaction, rotation, and user-controlled retention.
+### 6. Security & Privacy (completed core)
+- EncryptedSharedPreferences for sensitive model configs; app sandbox isolation.
+- SAF-based external storage imports with filename sanitization and checksums.
+- Crash-safe write patterns (temp files + atomic move) for models and downloads.
+- FileRingLogger with automatic rotation and size limits.
+- Completed: scoped storage, SHA-256 verification, atomic operations, secure preferences.
+- Next: explicit export pathway, logging redaction, user-controlled retention policies.
 
 ### 7. Build, Tooling & CI
 - Configure Git repo with pre-commit formatting (ktlint), C++ clang-format, cmake build targets.
@@ -84,10 +97,10 @@
 2. Establish Navigation Compose shell, shared design system, and ViewModel-backed chat/home screens.
 3. Surface metrics overlays, message detail drawers, and reasoning timeline using existing engine metrics.
 
-### Phase 2 – RAG & Documents (Week 3)
-1. Upgrade ingestion pipeline (OCR, tokenizer chunking, ANN persistence) with WorkManager-driven background jobs.
-2. Build Documents screen for import queue, status, re-embed, delete, and per-doc metrics.
-3. Integrate hybrid search into chat composer suggestions and global search overlays.
+### Phase 2 – RAG & Documents (completed)
+1. Completed: Ingestion pipeline (OCR, tokenizer chunking, ANN persistence) with WorkManager.
+2. Completed: Documents screen with import, status, delete, and metrics.
+3. Completed: Hybrid search integrated into global search with FTS5 and semantic retrieval.
 
 ### Phase 3 – Security, Tooling, Polish (Week 4)
 1. Enforce storage policies, encrypted preferences, export workflows, and audit logging.
@@ -121,6 +134,7 @@
 - Battery saver strategy specifics (adaptive polling, GPU layer scaling).
 
 ## Next Immediate Actions
-1. Introduce repository/ViewModel layer for chats, folders, manifests, and engine state to decouple UI from direct database calls (Workstreams 2/3/5).
-2. Add manifest presets plus checksum verification for catalog downloads, surfacing integrity alerts in UI (Workstreams 2/6).
-3. Replace naive RAG chunking with tokenizer-aware segmentation and prepare ANN persistence design (Workstream 4).
+1. Native HNSWlib integration for production-scale ANN performance (Workstream 4).
+2. Comprehensive test coverage: unit tests for repositories/services, instrumentation for UI flows (Workstream 8).
+3. CI/CD pipeline with automated testing, linting, and performance benchmarking (Workstream 7).
+4. Export/share pipeline for chat conversations and document corpora (Workstream 6).

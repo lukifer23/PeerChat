@@ -52,7 +52,29 @@ Embeddings normalized and stored with:
 - Dimension and L2 norm (for cosine similarity)
 - Text hash (for deduplication)
 
-### 4. Hybrid Search
+### 4. Approximate Nearest Neighbor Indexing
+
+**Current Implementation**: Hash-plane based ANN
+
+The system uses an in-memory hash-plane approximation for fast vector retrieval:
+
+```kotlin
+registerRecords(records, numPlanes=12, bucketSize=256, fallbackSize=512)
+```
+
+**Index Structure**:
+1. Hash-plane partitioning with configurable planes (default 12)
+2. Broad search breadth: `max(topK * planes/4, bucketSize, fallbackSize)`
+3. Cosine similarity ranking across candidate set
+4. Top-k selection from ranked results
+
+**Persistence**:
+- Index serialized to disk via `AnnIndexStorage`
+- Loaded on app startup
+- Rebuilt on demand via WorkManager
+- Storage format: binary with magic number and version
+
+### 5. Hybrid Search
 
 **Retrieval Strategy**: Rank fusion of semantic + lexical
 
@@ -61,9 +83,10 @@ retrieveHybrid(query, topK=6, alphaSemantic=0.7f, alphaLexical=0.3f)
 ```
 
 **Semantic Search**:
-1. Embed query using same model
-2. Cosine similarity against all embeddings
-3. Score = dot(q, v) / (||q|| * ||v||)
+1. Embed query using same model (cached)
+2. ANN index query for candidate embeddings
+3. FTS5 lexical search for additional candidates
+4. Cosine similarity scoring: dot(q, v) / (||q|| * ||v||)
 
 **Lexical Search**:
 1. FTS5 full-text search on chunk text
@@ -77,7 +100,21 @@ finalScore = semanticScore * 0.7 + lexicalScore * 0.3
 
 Sort by finalScore, return top-k chunks.
 
-### 5. Context Assembly
+### 6. Caching Strategy
+
+**Embedding Cache**: LRU with 1500 entry limit, 32MB max
+- Caches computed embeddings by text hash
+- Reduces redundant embedding calls during indexing
+
+**Token Count Cache**: LRU with 5000 entry limit
+- Caches tokenization results during chunking
+- Speeds up binary search for chunk boundaries
+
+**Document Score Cache**: LRU with configurable size (default 2000)
+- Caches scored document candidates
+- Reduces recomputation in repeated queries
+
+### 7. Context Assembly
 
 Selected chunks formatted:
 ```
@@ -134,12 +171,14 @@ Context appended to user query before prompt composition.
 **For speed**:
 - Reduce `topK` to 3-4
 - Use lexical-only search (`alphaSemantic=0.0`) for rapid FTS5
-- Cache query embeddings (future enhancement)
+- ANN index reduces semantic search time
+- Embedding and token caches improve repeat performance
 
 ## Future Enhancements
 
-- **HNSWlib ANN**: Replace linear scan with approximate nearest neighbor index
-- **Embedding cache**: Persist query embeddings
-- **Batch embedding**: Process multiple chunks in single call
+- **HNSWlib ANN**: Replace current hash-plane implementation with production-grade HNSW graph index
+- **Batch embedding**: Process multiple chunks in single call for improved throughput
 - **Per-document embeddings**: Support multiple embedding models per corpus
+- **Query embedding cache**: Persist query embeddings across app restarts
+- **Incremental ANN updates**: Update index without full rebuild
 

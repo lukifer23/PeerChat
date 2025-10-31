@@ -34,28 +34,40 @@ docs/         - Document processing (PDF, OCR)
 
 ## Dependency Injection
 
-The application now uses Hilt to provide singletons for repositories, services, and engine adapters:
+The application uses Hilt for dependency injection across all layers:
 
 - `ServiceModule` supplies `ModelManifestService`, `ModelRepository`, `ModelService`, `DocumentService`, `SearchService`, `ModelStateCache`, and the shared `Retriever` instance.
-- `DataModule` exposes the Room `PeerDatabase` and `PeerChatRepository` singletons.
-- `ViewModelModule` contributes utility singletons (`PromptComposer`, `StreamingEngine`, `OcrService`).
+- `DataModule` exposes the Room `PeerDatabase` and `PeerChatRepository` singletons with SQLCipher encryption support.
+- `ViewModelModule` contributes utility singletons (`PromptComposer`, `StreamingEngine`).
 - `PeerChatApp` is annotated with `@HiltAndroidApp`, while activities/composables resolve ViewModels via `hiltViewModel()`.
 
-This eliminates the old `ServiceRegistry` singleton and ensures feature modules receive consistent dependencies in both production and tests.
+All services are injected as singletons ensuring consistent dependency graphs across production and test environments.
 
 ## Data Flow
 
 ### Model Loading Flow
 
 ```
-HomeViewModel.loadModelInternal()
-  → EngineRuntime.unload() // Clear previous
-  → EngineRuntime.load(config)
-    → EngineNative.loadModel() // JNI
-      → llama_model_load_from_file()
-  → EngineNative.detectModel() // Extract GGUF metadata
-  → ModelManifestService.ensureManifestFor()
-    → Compute SHA-256, extract family/template
+HomeViewModel.loadModel()
+  → ModelService.loadModel() // Orchestrated loading
+    → ModelLoadManager.loadModel()
+      → Validate config and manifest
+      → ModelPreloader.requestPreload() // Background preload hint
+      → EngineRuntime.unload() // Clear previous
+      → EngineRuntime.load(config)
+        → EngineNative.loadModel() // JNI
+          → llama_model_load_from_file()
+      → EngineNative.detectModel() // Extract GGUF metadata
+      → ModelManifestService.ensureManifestFor()
+        → Compute SHA-256, extract family/template
+      → ModelHealthChecker.checkCurrentModel() // Health validation
+        → Tokenization test
+        → Basic inference test
+        → Memory integrity check
+        → Metadata consistency check
+        → Context window validation
+      → ModelConfigStore.save() // Persist config
+  → ModelPreloader.markRecentlyUsed() // Update usage stats
   → Update UI state with detected template
 ```
 
@@ -102,13 +114,18 @@ Central engine state manager:
 - KV cache capture/restore per chat
 - GGUF metadata detection and caching
 
-### ModelManifestService
+### ModelManifestService & ModelService
 
 Model lifecycle management:
 - Manifest registration with SHA-256 checksums
 - Template detection from GGUF kv metadata
 - Verification and integrity checks
 - Family and context length extraction
+
+ModelService coordinates:
+- ModelLoadManager: orchestrated loading with progress tracking, timeouts, cancellation
+- ModelPreloader: background preloading of frequently-used models with priority queue
+- ModelHealthChecker: comprehensive validation (tokenization, inference, memory, metadata, context)
 
 ### RagService
 
@@ -117,6 +134,9 @@ RAG retrieval engine:
 - Rank fusion with configurable weights
 - Tokenizer-aware chunking using model tokenizer
 - Embedding generation via llama.cpp
+- ANN indexing for fast vector retrieval with hash-plane-based approximate search
+- LRU caching for embeddings, token counts, and document scores
+- On-disk persistence for ANN index across app restarts
 
 ### PromptComposer & Reasoning Parser
 
@@ -137,12 +157,15 @@ Template-aware prompt building:
 
 ## Performance
 
-- **KV cache persistence**: Per-chat snapshots for fast context restore
+- **KV cache persistence**: Per-chat snapshots for fast context restore with GZIP compression
 - **LRU cache telemetry**: Hits/misses/evictions and byte usage exposed via `ModelRepository.CacheStats`
 - **Streaming inference**: Real-time token delivery with backpressure
-- **Hybrid search**: Combines semantic accuracy with lexical speed
+- **Hybrid search**: Combines semantic accuracy with lexical speed via FTS5
+- **ANN indexing**: Hash-plane approximate nearest neighbor for fast vector search
 - **Tokenizer-aware chunking**: Accurate token counts prevent overflow
-- **Vulkan acceleration**: GPU offload for inference (configurable layers)
+- **Embedding caching**: LRU caching for embeddings, token counts, and document scores
+- **Model preloading**: Background preloading of frequently-used models
+- **Vulkan acceleration**: GPU offload for inference with optimized batch sizes
 
 ## State Management
 

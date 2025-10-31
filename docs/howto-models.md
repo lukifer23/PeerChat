@@ -24,9 +24,20 @@ The Settings dialog and the **Models** chip in the top bar list curated defaults
 Inside Settings:
 
 - Adjust runtime parameters (threads, context length, GPU layers, Vulkan toggle).
-- Press **Load Model** to unload any current model, clear KV cache, and load the selected path.
-- On success, the manifest is updated with metadata detected from the GGUF file (architecture, context length).
-- **Unload** releases the model and clears runtime state.
+- Press **Load Model** to trigger the robust loading system:
+  1. **Validation**: Config and manifest verification
+  2. **Preload**: Hint for background preloading of frequently-used models
+  3. **Unload**: Clear previous model and KV cache
+  4. **Load**: Load model via llama.cpp with Vulkan optimization
+  5. **Detection**: Extract GGUF metadata (architecture, context, template)
+  6. **Health Check**: Comprehensive validation including tokenization, basic inference, memory integrity, metadata consistency, and context window
+  7. **Persist**: Save configuration for automatic restore on next launch
+- Progress tracking shows current stage and estimated completion
+- **Unload** releases the model and clears runtime state
+
+**Intelligent Preloading**: Frequently-used models are automatically preloaded in the background for near-instant access. The system tracks model usage and prioritizes preloading based on recency and access frequency.
+
+**Health Validation**: Every loaded model undergoes comprehensive health checks to ensure functional operation. Failed checks result in automatic unload and error reporting.
 
 KV snapshots are stored per chat and restored automatically on the next message. Snapshots are invalidated whenever you load or unload a model.
 
@@ -42,9 +53,17 @@ The manifests are persisted via Room migrations, so updates will not wipe your l
 
 ## Integrity verification
 
-Each time a manifest is created or refreshed, PeerChat computes a SHA-256 digest to detect silent corruption. A future release will expose an explicit verify action and enforce checksum matching for remote catalogs.
+Each time a manifest is created or refreshed, PeerChat computes a SHA-256 digest to detect silent corruption. Downloaded models are verified against catalog checksums. The WorkManager download system includes resume support and automatic retry on failure.
 
-## Roadmap
+## Advanced Features
 
-- Default manifest presets populated from `defaultmodels.md` with per-family tuning hints.
-- Template detection and automatic prompt wiring based on GGUF metadata.
+**Cache Statistics**: View KV cache performance metrics including hit/miss rates, evictions, and byte usage in Settings. Adjust cache limits to optimize memory usage.
+
+**Template Detection**: Models automatically detect their chat template from GGUF metadata. Templates are detected for Llama 3, ChatML, Qwen, Gemma, Mistral, and InternVL families. Manual override available in Settings.
+
+**Error Recovery**: The loading system includes comprehensive error recovery:
+- Automatic timeout handling for stuck loads
+- Cancellation support for user-initiated abort
+- Partial load cleanup on failure
+- Graceful degradation when health checks fail
+- Fallback strategies for model-specific issues
