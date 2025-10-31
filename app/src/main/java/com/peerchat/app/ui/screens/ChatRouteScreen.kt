@@ -98,7 +98,8 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
                     enabled = true,
                     messages = uiState.messages,
                     streaming = uiState.streaming,
-                    onSend = chatViewModel::sendPrompt
+                    onSend = chatViewModel::sendPrompt,
+                    onCancel = chatViewModel::cancelGeneration
                 )
             } else {
                 Text("Loading chat...")

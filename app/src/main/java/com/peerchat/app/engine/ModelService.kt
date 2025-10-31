@@ -34,7 +34,9 @@ class ModelService(
         onProgress("Preparing model load...")
         val result = repository.loadModel(config)
         when (result) {
-            is OperationResult.Success -> onProgress("Model loaded successfully")
+            is OperationResult.Success -> onProgress(
+                result.message.ifBlank { "Model loaded successfully" }
+            )
             is OperationResult.Failure -> onProgress("Failed to load model: ${result.error}")
         }
         return result

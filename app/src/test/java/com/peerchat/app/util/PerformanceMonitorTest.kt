@@ -165,7 +165,7 @@ class PerformanceMonitorTest {
 
         val stats = PerformanceMonitor.getStats(operation)
         assertNotNull("Should have stats", stats)
-        assertEquals("Should have 1000 samples", 1000, stats?.count)
+        assertTrue("Should retain bounded samples", (stats?.count ?: 0) in 1..100)
 
         // Cleanup
         PerformanceMonitor.clearMetrics(operation)

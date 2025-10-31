@@ -1,23 +1,21 @@
 # PeerChat Test & Metrics Plan
 
-> **Status:** The sections below describe the agreed test coverage. Stubs/fakes are being prepared; JVM test sources will land in the next iteration once release-safe harnesses are finalized.
+> **Status:** Core JVM tests are now in place (`ModelRepositoryLoadFallbackTest`, `PeerChatRepositoryIntegrationTest`, sanitizer/bench suites). The items below call out the remaining gaps and follow-on work to broaden coverage and metrics.
 
 ## Unit & Integration Test Coverage
 
-### 1. Prompt & Streaming Pipeline
-- **Target**: `HomeViewModel.ReasoningParser`
+### 1. Streaming Cancellation & Reasoning Metrics *(new)*
+- **Target**: `ChatViewModel.sendPrompt` / `StreamingEngine`
 - **Scenarios**
-  - Mixed visible/reasoning tokens with standard markers (`<think>`, `<|startofthink|>`).
-  - Nested/overlapping markers and truncated reasoning that never terminates.
-  - Streams with no reasoning markers to ensure pass-through behaviour.
+  - Cancelling an in-flight job invokes `EngineNative.abort()` and resets UI state.
+  - Successful stream persists reasoning metadata (duration, char count) onto the saved assistant message.
 - **Assertions**
-  - Visible text passed to the callback matches expected tokens.
-  - Reasoning buffer accumulates hidden segments exactly once per block.
-  - Parser returns empty reasoning when markers are absent.
+  - `ModelRepository.streamWithCache` only snapshots on terminal success.
+  - UI state transitions (`StreamingUiState`) reflect cancel vs. completion.
 
-### 2. Model Repository KV Cache
+### 2. Model Repository KV Cache *(todo – instrumentation path)*
 - **Target**: `ModelRepository`
-- **Approach**: Use a fake `EngineRuntime` via dependency seam (temporary test double) and temporary file system.
+- **Approach**: Provide an injectable `EngineRuntime` shim (or leverage the existing mocked tests once refactored) and temporary file system.
 - **Scenarios**
   - Capture/restore round-trip with GZIP compression (ensure byte identity).
   - LRU eviction when file count exceeds `maxCacheFiles`.
@@ -28,7 +26,7 @@
   - Evicted entries delete backing files and adjust tracked size.
   - Cache skip when snapshot bigger than budget.
 
-### 3. Manifest Refresh Path
+### 3. Manifest Refresh Path *(partially covered)*
 - **Target**: `ModelManifestService.ensureManifestFor`
 - **Scenarios**
   - Existing manifest update retains metadata and updates checksum/context length.
@@ -37,13 +35,17 @@
 - **Assertions**
   - DAO receives upsert with expected payload.
   - `metadataJson` contains checksum/timestamps.
+  - *(Follow-up)* add a regression test to lock the checksum/template behaviour.
 
-### 4. ViewModel Interaction (Instrumentation-lite)
-- **Target**: `HomeViewModel`
-- **Scenarios**
-  - `importDocument` toggles `indexing` flag and emits toasts for success/failure.
-  - `activateManifest` updates `storedConfig` / template metadata.
-- **Approach**: Run on `Dispatchers.Unconfined` with fake repository/services.
+### 4. ViewModel & Repository Integration
+- **Target**: `PeerChatRepositoryIntegrationTest` (JVM) + future `HomeViewModel`
+- **Current coverage**
+  - Chat CRUD lifecycle (folders, messages, cascade delete).
+  - Document + RAG chunk ingestion and search.
+- **Next steps**
+  - `HomeViewModel.importDocument` toggles `indexing` flag and emits toasts for success/failure.
+  - `HomeViewModel.activateManifest` updates `storedConfig` / template metadata.
+  - Migrate remaining interaction checks to targeted unit tests using `kotlinx-coroutines-test`.
 
 ## Test Harness
 - Add `app/src/test/java/com/peerchat/app/` for JVM unit tests (Robolectric not required).
@@ -72,8 +74,8 @@
 - Prepare `AnalyticsEvent.CacheSnapshot` / `AnalyticsEvent.ReasoningSummary` scaffolding for future sink integration.
 
 ## Implementation Order
-1. Introduce test support utilities (fake runtime, coroutine rule).
-2. Write unit tests for `ReasoningParser` and manifest service.
-3. Add cache stats instrumentation + tests.
-4. Update `HomeViewModel` streaming metadata & message persistence.
-5. Surface metrics in UI (optional mini-card in settings dialog).
+1. Reintroduce focused streaming cancellation tests (fake engine + `runTest`).
+2. Bring back manifest/kv-cache suites using the new dependency seams.
+3. Layer on ViewModel tests for document import / manifest activation paths.
+4. Extend metrics instrumentation (cache + reasoning) once the above is locked.
+5. Surface metrics in UI (e.g. cache stats card in settings) and document telemetry hooks.

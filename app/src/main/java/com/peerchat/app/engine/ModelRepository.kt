@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -60,35 +61,63 @@ class ModelRepository(
      * Performs basic sanity checks on file integrity and format.
      */
     suspend fun validateModel(path: String): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
+        val startNs = System.nanoTime()
+        val file = File(path)
+        val fileName = file.name.ifBlank { path.substringAfterLast('/', path) }
+
+        fun failure(reason: String): OperationResult<ModelManifest> {
+            Logger.e(
+                "validateModel:failure",
+                mapOf(
+                    "file" to fileName,
+                    "reason" to reason
+                )
+            )
+            return OperationResult.Failure(reason)
+        }
+
         return@withContext try {
-            val file = File(path)
             if (!file.exists()) {
-                return@withContext OperationResult.Failure("Model file does not exist: $path")
+                return@withContext failure("Model file does not exist: $path")
             }
 
             if (!file.canRead()) {
-                return@withContext OperationResult.Failure("Model file is not readable: $path")
+                return@withContext failure("Model file is not readable: $path")
             }
 
-            // Check minimum file size (GGUF files are typically > 1MB)
+            val sizeBytes = file.length()
             val minSize = 1024 * 1024 // 1MB
-            if (file.length() < minSize) {
-                return@withContext OperationResult.Failure("Model file too small (${file.length()} bytes), expected at least $minSize bytes")
+            if (sizeBytes < minSize) {
+                return@withContext failure("Model file too small (${sizeBytes} bytes), expected at least $minSize bytes")
             }
 
-            // Check maximum file size (prevent loading extremely large files)
             val maxSize = 50L * 1024 * 1024 * 1024 // 50GB
-            if (file.length() > maxSize) {
-                return@withContext OperationResult.Failure("Model file too large (${file.length()} bytes), maximum allowed is $maxSize bytes")
+            if (sizeBytes > maxSize) {
+                return@withContext failure("Model file too large (${sizeBytes} bytes), maximum allowed is $maxSize bytes")
             }
 
-            // Try to get manifest to validate metadata
+            val metaSnapshot = EngineRuntime.currentModelMeta()?.takeIf { it.isNotBlank() }
+
+            manifestService.ensureManifestFor(path, modelMetaJson = metaSnapshot)
+
             val manifest = manifestService.list().firstOrNull { it.filePath == path }
-                ?: return@withContext OperationResult.Failure("Model manifest not found. Try importing the model first.")
+                ?: return@withContext failure("Model manifest not found. Try importing the model first.")
+
+            val durationMs = (System.nanoTime() - startNs) / 1_000_000
+            Logger.i(
+                "validateModel:success",
+                mapOf(
+                    "file" to fileName,
+                    "sizeBytes" to sizeBytes,
+                    "durationMs" to durationMs,
+                    "manifestId" to manifest.id,
+                    "ctx" to manifest.contextLength
+                )
+            )
 
             OperationResult.Success(manifest)
         } catch (e: Exception) {
-            OperationResult.Failure("Model validation failed: ${e.message}")
+            failure("Model validation failed: ${e.message}")
         }
     }
 
@@ -169,79 +198,148 @@ class ModelRepository(
     // --------------------- Model lifecycle ---------------------
     suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         return@withContext try {
-            // Validate model before attempting to load
             val validationResult = validateModel(config.modelPath)
             if (validationResult is OperationResult.Failure) {
                 return@withContext OperationResult.Failure(validationResult.error)
             }
 
-            unloadInternal()
+            val attempts = buildLoadAttempts(config)
+            val failureReasons = mutableListOf<String>()
 
-            // Track load time
-            val loadStartTime = System.currentTimeMillis()
-            
-            // Retry with exponential backoff
-            var attempt = 0
-            val maxRetries = 3
-            var lastError: String? = null
-            
-            while (attempt < maxRetries) {
-                val loaded = runCatching { EngineRuntime.load(config.toEngineConfig()) }.getOrElse {
-                    lastError = it.message
-                    false
-                }
-                
-                if (loaded) {
-                    val loadTime = System.currentTimeMillis() - loadStartTime
-                    Logger.i(
-                        "Model loaded successfully",
-                        mapOf(
-                            "path" to config.modelPath,
-                            "loadTimeMs" to loadTime,
-                            "threads" to config.threads,
-                            "context" to config.contextLength,
-                            "gpuLayers" to config.gpuLayers,
-                            "useVulkan" to config.useVulkan
-                        )
+            Logger.i(
+                "loadModel:start",
+                mapOf(
+                    "file" to File(config.modelPath).name,
+                    "threads" to config.threads,
+                    "ctx" to config.contextLength,
+                    "gpuLayers" to config.gpuLayers,
+                    "attempts" to attempts.size
+                )
+            )
+
+            for ((index, attempt) in attempts.withIndex()) {
+                var retries = 0
+                var lastError: String? = null
+
+                Logger.i(
+                    "loadModel:attempt",
+                    mapOf(
+                        "file" to File(attempt.config.modelPath).name,
+                        "reason" to attempt.reason,
+                        "threads" to attempt.config.threads,
+                        "ctx" to attempt.config.contextLength,
+                        "gpuLayers" to attempt.config.gpuLayers,
+                        "useVulkan" to attempt.config.useVulkan,
+                        "index" to index
                     )
-                    
-                    ModelConfigStore.save(appContext, config)
-                    // Get metadata from engine (should be ready from parallel detection)
-                    val modelMeta = EngineRuntime.currentModelMeta()
-                    // Ensure manifest in background to not block
-                    withContext(Dispatchers.IO) {
-                        manifestService.ensureManifestFor(
-                            path = config.modelPath,
-                            modelMetaJson = modelMeta,
-                            isDefault = false
+                )
+
+                while (retries < MAX_LOAD_RETRIES) {
+                    unloadInternal()
+                    val loadStartTime = System.currentTimeMillis()
+                    val loadResult = runCatching { EngineRuntime.load(attempt.config.toEngineConfig()) }
+                    val loaded = loadResult.getOrDefault(false)
+
+                    if (loaded) {
+                        val loadTime = System.currentTimeMillis() - loadStartTime
+                        Logger.i(
+                            "Model loaded successfully",
+                            mapOf(
+                                "path" to attempt.config.modelPath,
+                                "loadTimeMs" to loadTime,
+                                "threads" to attempt.config.threads,
+                                "context" to attempt.config.contextLength,
+                                "gpuLayers" to attempt.config.gpuLayers,
+                                "useVulkan" to attempt.config.useVulkan,
+                                "attempt" to attempt.reason
+                            )
                         )
-                    }
-                    // Try to get existing manifest immediately, refresh will happen in background
-                    val finalManifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
-                        ?: run {
-                            // Wait briefly if manifest doesn't exist yet (new import)
-                            kotlinx.coroutines.delay(100)
-                            manifestService.list().firstOrNull { it.filePath == config.modelPath }
+
+                        ModelConfigStore.save(appContext, attempt.config)
+                        val modelMeta = EngineRuntime.currentModelMeta()
+                        withContext(Dispatchers.IO) {
+                            manifestService.ensureManifestFor(
+                                path = attempt.config.modelPath,
+                                modelMetaJson = modelMeta,
+                                isDefault = false
+                            )
                         }
-                    if (finalManifest != null) {
-                        return@withContext OperationResult.Success(finalManifest, "Model loaded in ${loadTime}ms")
+                        val finalManifest = manifestService.list().firstOrNull { it.filePath == attempt.config.modelPath }
+                            ?: run {
+                                kotlinx.coroutines.delay(100)
+                                manifestService.list().firstOrNull { it.filePath == attempt.config.modelPath }
+                            }
+                        if (finalManifest != null) {
+                            val baseMessage = "Model loaded in ${loadTime}ms"
+                            val message = if (index == 0) {
+                                baseMessage
+                            } else {
+                                "$baseMessage using ${attempt.readableReason()} fallback"
+                            }
+                            return@withContext OperationResult.Success(finalManifest, message)
+                        } else {
+                            ModelConfigStore.clear(appContext)
+                            val failReason = "Model loaded but manifest not found"
+                            Logger.e(
+                                "loadModel:manifest_missing",
+                                mapOf(
+                                    "file" to File(attempt.config.modelPath).name,
+                                    "durationMs" to loadTime
+                                )
+                            )
+                            return@withContext OperationResult.Failure(failReason)
+                        }
                     } else {
-                        ModelConfigStore.clear(appContext)
-                        return@withContext OperationResult.Failure("Model loaded but manifest not found")
+                        lastError = loadResult.exceptionOrNull()?.message
+                            ?: (EngineRuntime.status.value as? EngineRuntime.EngineStatus.Error)?.message
+                        retries++
+                        if (retries < MAX_LOAD_RETRIES) {
+                            val delayMs = (1000L * (1 shl retries)).coerceAtMost(10_000L)
+                            kotlinx.coroutines.delay(delayMs)
+                        }
                     }
                 }
-                
-                attempt++
-                if (attempt < maxRetries) {
-                    val delayMs = (1000L * (1 shl attempt)).coerceAtMost(10000L) // Max 10s
-                    kotlinx.coroutines.delay(delayMs)
-                }
+
+                val reason = lastError?.let { "${attempt.readableReason()}: $it" } ?: "${attempt.readableReason()}: unknown error"
+                Logger.w(
+                    "loadModel:attempt_failed",
+                    mapOf(
+                        "file" to File(attempt.config.modelPath).name,
+                        "reason" to reason,
+                        "retries" to retries
+                    )
+                )
+                failureReasons += reason
             }
-            
+
             ModelConfigStore.clear(appContext)
-            OperationResult.Failure("Failed to load model after $maxRetries attempts${lastError?.let { ": $it" } ?: ""}")
+            val failureMessage =
+                buildString {
+                    append("Failed to load model after ${attempts.size} attempt(s)")
+                    if (failureReasons.isNotEmpty()) {
+                        append(" (")
+                        append(failureReasons.joinToString("; "))
+                        append(")")
+                    }
+                }
+            Logger.e(
+                "loadModel:exhausted",
+                mapOf(
+                    "file" to File(config.modelPath).name,
+                    "message" to failureMessage
+                )
+            )
+            OperationResult.Failure(failureMessage)
         } catch (e: Exception) {
             ModelConfigStore.clear(appContext)
+            Logger.e(
+                "loadModel:exception",
+                mapOf(
+                    "file" to File(config.modelPath).name,
+                    "error" to (e.message ?: "unknown")
+                ),
+                e
+            )
             OperationResult.Failure("Error loading model: ${e.message}")
         }
     }
@@ -468,11 +566,6 @@ class ModelRepository(
         updateStatsLocked()
     }
 
-    companion object {
-        private const val DEFAULT_MAX_CACHE_FILES = 50
-        private val DEFAULT_MAX_CACHE_BYTES = 500L * 1024L * 1024L
-    }
-
     private fun recordMiss() {
         cacheMisses.incrementAndGet()
         cacheLock.withLock { updateStatsLocked() }
@@ -503,6 +596,36 @@ class ModelRepository(
         }
     }
 
+    private fun buildLoadAttempts(initial: StoredEngineConfig): List<LoadAttempt> {
+        val attempts = LinkedHashMap<StoredEngineConfig, String>()
+        attempts[initial] = "primary"
+        if (initial.useVulkan) {
+            if (initial.gpuLayers > 0) {
+                val reducedGpuLayers = (initial.gpuLayers / 2).coerceAtLeast(1)
+                if (reducedGpuLayers < initial.gpuLayers) {
+                    attempts[initial.copy(gpuLayers = reducedGpuLayers)] = "reduced_gpu_layers"
+                }
+            }
+            attempts[initial.copy(useVulkan = false, gpuLayers = 0)] = "cpu_fallback"
+        }
+        return attempts.map { LoadAttempt(it.key, it.value) }
+    }
+
+    private data class LoadAttempt(val config: StoredEngineConfig, val reason: String)
+
+    private fun LoadAttempt.readableReason(): String = when (reason) {
+        "primary" -> "primary configuration"
+        "reduced_gpu_layers" -> "reduced GPU layers"
+        "cpu_fallback" -> "CPU execution"
+        else -> reason
+    }
+
+    companion object {
+        private const val DEFAULT_MAX_CACHE_FILES = 50
+        private val DEFAULT_MAX_CACHE_BYTES = 500L * 1024L * 1024L
+        private const val MAX_LOAD_RETRIES = 3
+    }
+
     data class CacheStats(
         val hits: Long = 0,
         val misses: Long = 0,
@@ -523,10 +646,21 @@ class ModelRepository(
         stop: Array<String>
     ): Flow<EngineStreamEvent> {
         return flow {
+            var emittedTerminal = false
             val restored = runCatching { restoreKv(chatId) }.getOrDefault(false)
             if (!restored) {
                 runCatching { EngineRuntime.clearState(false) }
             }
+
+            Logger.i(
+                "streamWithCache: start",
+                mapOf(
+                    "chatId" to chatId,
+                    "promptLength" to prompt.length,
+                    "restoredKv" to restored,
+                    "template" to template
+                )
+            )
 
             val upstream = StreamingEngine.stream(
                 prompt = prompt,
@@ -539,11 +673,39 @@ class ModelRepository(
                 stop = stop
             ).onEach { event ->
                 if (event is EngineStreamEvent.Terminal) {
+                    emittedTerminal = true
                     val success = !event.metrics.isError
+                    Logger.i(
+                        "streamWithCache: terminal_event",
+                        mapOf(
+                            "chatId" to chatId,
+                            "success" to success,
+                            "promptTokens" to event.metrics.promptTokens,
+                            "generationTokens" to event.metrics.generationTokens,
+                            "ttfsMs" to event.metrics.ttfsMs,
+                            "totalMs" to event.metrics.totalMs,
+                            "stopReason" to event.metrics.stopReason
+                        )
+                    )
                     withContext(Dispatchers.IO) {
                         runCatching {
                             if (success) captureKv(chatId) else clearKv(chatId)
                         }
+                    }
+                }
+            }.onCompletion { cause ->
+                if (cause != null || !emittedTerminal) {
+                    Logger.w(
+                        "streamWithCache: onCompletion_cleanup",
+                        mapOf(
+                            "chatId" to chatId,
+                            "cause" to (cause?.message ?: if (emittedTerminal) "missing_terminal" else "unknown")
+                        ),
+                        cause
+                    )
+                    withContext(Dispatchers.IO) {
+                        runCatching { EngineRuntime.clearState(false) }
+                        runCatching { clearKv(chatId) }
                     }
                 }
             }.flowOn(Dispatchers.IO)

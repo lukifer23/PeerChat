@@ -37,7 +37,8 @@ object SecureDatabaseProvider {
         .openHelperFactory(factory)
         .addMigrations(
             PeerDatabaseMigrations.MIGRATION_1_2,
-            PeerDatabaseMigrations.MIGRATION_2_3
+            PeerDatabaseMigrations.MIGRATION_2_3,
+            PeerDatabaseMigrations.MIGRATION_3_4
         )
         .fallbackToDestructiveMigration() // Last resort for development
         .build()

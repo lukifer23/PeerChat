@@ -252,3 +252,34 @@ data class ModelManifest(
     val metadataJson: String,
     val isDefault: Boolean,
 )
+
+@Entity(
+    tableName = "benchmark_results",
+    foreignKeys = [
+        ForeignKey(
+            entity = ModelManifest::class,
+            parentColumns = ["id"],
+            childColumns = ["manifestId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("manifestId"),
+        Index("runAt"),
+        Index(value = ["manifestId", "runAt"])
+    ]
+)
+data class BenchmarkResult(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val manifestId: Long,
+    val promptText: String,
+    val promptTokens: Int,
+    val generatedTokens: Int,
+    val ttftMs: Long, // Time to First Token
+    val totalMs: Long,
+    val tps: Float, // Tokens Per Second
+    val contextUsedPct: Float,
+    val errorMessage: String?, // Null if successful
+    val runAt: Long,
+    val deviceInfo: String, // Device/hardware info
+)

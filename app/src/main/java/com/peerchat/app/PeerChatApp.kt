@@ -1,6 +1,7 @@
 package com.peerchat.app
 
 import android.app.Application
+import com.peerchat.app.engine.ModelDownloadManager
 import com.peerchat.app.util.Logger
 import com.peerchat.engine.EngineRuntime
 import dagger.hilt.android.HiltAndroidApp
@@ -17,6 +18,7 @@ class PeerChatApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Logger.init(this)
+        ModelDownloadManager.scheduleMaintenance(this)
         
         // Pre-warm engine and scan for model metadata
         applicationScope.launch {

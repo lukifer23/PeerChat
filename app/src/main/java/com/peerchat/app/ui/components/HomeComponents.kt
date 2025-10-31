@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
@@ -15,7 +18,6 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -23,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
@@ -39,13 +42,14 @@ import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun StatusRow(status: EngineRuntime.EngineStatus, metrics: EngineMetrics) {
     val spacing = LocalSpacing.current
-    Row(
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(spacing.small),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(spacing.tiny)
     ) {
         listOf(
             "Status: ${statusLabel(status)}",
@@ -102,6 +106,7 @@ fun EmptyListHint(text: String) {
     Text(text, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ColumnScope.HomeListRow(
     title: String,
@@ -109,29 +114,38 @@ fun ColumnScope.HomeListRow(
     actions: List<Pair<String, () -> Unit>>,
 ) {
     val spacing = LocalSpacing.current
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = spacing.tiny),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(spacing.tiny)
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.fillMaxWidth()) {
             Text(
                 title,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             subtitle?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(spacing.tiny),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            actions.forEach { (label, handler) ->
-                TextButton(onClick = handler) { Text(label) }
+        if (actions.isNotEmpty()) {
+            FlowRow(
+                modifier = Modifier.wrapContentWidth(),
+                horizontalArrangement = Arrangement.spacedBy(spacing.tiny),
+                verticalArrangement = Arrangement.spacedBy(spacing.tiny)
+            ) {
+                actions.forEach { (label, handler) ->
+                    AssistChip(onClick = handler, label = { Text(label) })
+                }
             }
         }
     }
@@ -147,7 +161,7 @@ fun HomeTopBar(
 ) {
     val spacing = LocalSpacing.current
     val elevations = LocalElevations.current
-    CenterAlignedTopAppBar(
+    TopAppBar(
         navigationIcon = {
             Icon(
                 painter = painterResource(R.drawable.ic_launcher_monochrome),
@@ -158,16 +172,7 @@ fun HomeTopBar(
                     .size(28.dp)
             )
         },
-        title = {
-            Column(verticalArrangement = Arrangement.spacedBy(spacing.micro)) {
-                Text("PeerChat", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "On-device AI studio",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
+        title = {},
         actions = {
             AssistChip(
                 onClick = onNewChat,

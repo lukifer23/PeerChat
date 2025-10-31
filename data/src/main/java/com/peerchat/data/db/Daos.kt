@@ -125,6 +125,12 @@ interface EmbeddingDao {
     @Query("SELECT * FROM embeddings WHERE textHash = :textHash LIMIT 1")
     suspend fun getByTextHash(textHash: String): Embedding?
 
+    @Query("SELECT * FROM embeddings WHERE docId IN (:docIds)")
+    suspend fun getByDocIds(docIds: List<Long>): List<Embedding>
+
+    @Query("SELECT * FROM embeddings WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<Embedding>
+
     @Query("SELECT * FROM embeddings LIMIT :limit OFFSET :offset")
     suspend fun listPaginated(limit: Int, offset: Int): List<Embedding>
 
@@ -202,4 +208,28 @@ interface ModelManifestDao {
 
     @Query("UPDATE model_manifests SET metadataJson = :metadataJson WHERE id = :id")
     suspend fun updateMetadata(id: Long, metadataJson: String)
+}
+
+@Dao
+interface BenchmarkResultDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(result: BenchmarkResult): Long
+
+    @Query("SELECT * FROM benchmark_results WHERE manifestId = :manifestId ORDER BY runAt DESC")
+    fun observeByManifest(manifestId: Long): Flow<List<BenchmarkResult>>
+
+    @Query("SELECT * FROM benchmark_results WHERE manifestId = :manifestId ORDER BY runAt DESC LIMIT 10")
+    suspend fun getRecentByManifest(manifestId: Long): List<BenchmarkResult>
+
+    @Query("SELECT * FROM benchmark_results ORDER BY runAt DESC LIMIT :limit")
+    suspend fun getRecent(limit: Int = 50): List<BenchmarkResult>
+
+    @Query("DELETE FROM benchmark_results WHERE manifestId = :manifestId")
+    suspend fun deleteByManifest(manifestId: Long)
+
+    @Query("DELETE FROM benchmark_results WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("SELECT COUNT(*) FROM benchmark_results WHERE manifestId = :manifestId")
+    suspend fun countByManifest(manifestId: Long): Int
 }

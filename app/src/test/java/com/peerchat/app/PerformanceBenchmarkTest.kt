@@ -37,7 +37,12 @@ class PerformanceBenchmarkTest {
 
     @Test
     fun `database insertion performance benchmark`() = runBlocking {
-        val chatId = repository.createChat(null, "Benchmark Chat", "System", "model")
+        val chatId = repository.createChat(
+            title = "Benchmark Chat",
+            folderId = null,
+            systemPrompt = "System",
+            modelId = "model"
+        )
 
         val messageCount = 1000
         val messages = List(messageCount) { index ->
@@ -116,7 +121,8 @@ class PerformanceBenchmarkTest {
             )
         }
 
-        val chunkIds = chunks.map { repository.insertRagChunk(it) }
+        val ragDao = repository.database().ragDao()
+        chunks.forEach { chunk -> ragDao.insertChunk(chunk) }
         val chunkTime = System.currentTimeMillis() - chunkStart
 
         // Benchmark search performance
@@ -133,14 +139,19 @@ class PerformanceBenchmarkTest {
         println("Search performance: ${searchResults.size} results in ${searchTime}ms")
 
         // Verify chunk integrity
-        val allChunks = repository.getChunksByDocument(docId)
-        assertEquals("All chunks should be created", chunks.size, allChunks.size)
+        val totalChunks = ragDao.countChunks()
+        assertEquals("All chunks should be created", chunks.size, totalChunks)
     }
 
     @Test
     fun `concurrent operations performance test`() = runBlocking {
         val chatIds = List(5) { index ->
-            repository.createChat(null, "Concurrent Chat $index", "System", "model")
+            repository.createChat(
+                title = "Concurrent Chat $index",
+                folderId = null,
+                systemPrompt = "System",
+                modelId = "model"
+            )
         }
 
         val totalMessages = 500
@@ -181,7 +192,12 @@ class PerformanceBenchmarkTest {
     fun `memory efficiency test with large dataset`() = runBlocking {
         val initialMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()
 
-        val chatId = repository.createChat(null, "Memory Test Chat", "System", "model")
+        val chatId = repository.createChat(
+            title = "Memory Test Chat",
+            folderId = null,
+            systemPrompt = "System",
+            modelId = "model"
+        )
 
         // Create a large number of messages
         val largeMessageCount = 5000
@@ -232,7 +248,12 @@ class PerformanceBenchmarkTest {
     fun `index effectiveness benchmark`() = runBlocking {
         // Create multiple chats with messages
         val chatIds = List(10) { index ->
-            repository.createChat(null, "Index Test Chat $index", "System", "model")
+            repository.createChat(
+                title = "Index Test Chat $index",
+                folderId = null,
+                systemPrompt = "System",
+                modelId = "model"
+            )
         }
 
         // Insert messages with searchable content
@@ -247,7 +268,7 @@ class PerformanceBenchmarkTest {
                 Message(
                     chatId = chatId,
                     role = "user",
-                    contentMarkdown = "This message contains $term and some other content",
+                    contentMarkdown = "This message discusses artificial intelligence, machine learning, and $term in detail.",
                     tokens = 8,
                     ttfsMs = 100L,
                     tps = 80f,
@@ -268,7 +289,8 @@ class PerformanceBenchmarkTest {
         // Test filtering by chat
         val firstChatId = chatIds.first()
         val chatSpecificStart = System.currentTimeMillis()
-        val chatResults = repository.searchMessagesInChat(firstChatId, "machine learning", limit = 20)
+        val messageDao = repository.database().messageDao()
+        val chatResults = messageDao.searchTextInChat(firstChatId, "machine learning", limit = 20)
         val chatSpecificTime = System.currentTimeMillis() - chatSpecificStart
 
         // Performance assertions

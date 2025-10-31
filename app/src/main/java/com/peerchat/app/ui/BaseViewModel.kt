@@ -30,6 +30,15 @@ abstract class BaseViewModel : ViewModel() {
     }
 
     /**
+     * Cancel all currently active jobs launched via [launchCancellable].
+     */
+    protected fun cancelActiveJobs() {
+        val snapshot = activeJobs.toList()
+        snapshot.forEach { it.cancel() }
+        activeJobs.removeAll(snapshot)
+    }
+
+    /**
      * Handle OperationResult with standardized error handling
      */
     protected fun <T> handleOperation(

@@ -171,13 +171,18 @@ object InputSanitizer {
             throw SecurityException("Filename too long: maximum $MAX_FILENAME_LENGTH characters allowed")
         }
 
-        return filename
+        val sanitized = filename
             .trim()
-            .replace(Regex("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_") // Replace dangerous characters with underscore
-            .replace(Regex("^\\.+"), "") // Remove leading dots
-            .replace(Regex("\\.+\\$"), "") // Remove trailing dots
-            .takeIf { it.isNotBlank() && it != "." && it != ".." }
-            ?: throw SecurityException("Invalid filename")
+            .replace(Regex("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_")
+            .replace(Regex("^\\.+"), "")
+            .replace(Regex("\\.+$"), "")
+            .replace(Regex("\\.{2,}"), ".")
+
+        if (sanitized.isBlank() || sanitized == "." || sanitized == "..") {
+            throw SecurityException("Invalid filename: ${filename}")
+        }
+
+        return sanitized
     }
 
     /**
@@ -234,4 +239,3 @@ object FormatUtils {
         }
     }
 }
-

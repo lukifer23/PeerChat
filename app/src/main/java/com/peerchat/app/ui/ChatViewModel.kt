@@ -8,11 +8,11 @@ import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.ModelRepository
 import com.peerchat.app.engine.PromptComposer
 import com.peerchat.app.ui.components.GlobalToastManager
+import com.peerchat.app.util.InputSanitizer
+import com.peerchat.app.util.Logger
 import com.peerchat.app.util.optFloatOrNull
 import com.peerchat.app.util.optIntOrNull
 import com.peerchat.app.util.optStringOrNull
-import com.peerchat.app.util.measureDuration
-import com.peerchat.app.util.InputSanitizer
 import com.peerchat.app.ui.stream.ReasoningParser
 import com.peerchat.data.db.Message
 import com.peerchat.engine.EngineMetrics
@@ -20,6 +20,10 @@ import com.peerchat.rag.Retriever
 import com.peerchat.rag.RagService
 import com.peerchat.templates.TemplateCatalog
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -32,9 +36,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import javax.inject.Inject
@@ -349,18 +350,44 @@ class ChatViewModel @Inject constructor(
     fun sendPrompt(prompt: String) {
         val chatId = _uiState.value.activeChatId ?: return
 
+        Logger.i(
+            "sendPrompt: received",
+            mapOf(
+                "chatId" to chatId,
+                "inputLength" to prompt.length
+            )
+        )
+
         // Sanitize user input for security
         val sanitizedPrompt = try {
             InputSanitizer.sanitizeChatInput(prompt)
         } catch (e: SecurityException) {
+            Logger.w(
+                "sendPrompt: sanitization_failed",
+                mapOf("chatId" to chatId),
+                e
+            )
             emitToast("Input validation failed: ${e.message}", true)
             return
         }
 
         if (sanitizedPrompt.isEmpty()) {
+            Logger.w(
+                "sendPrompt: sanitized_prompt_empty",
+                mapOf("chatId" to chatId)
+            )
             emitToast("Input contains invalid content", true)
             return
         }
+
+        Logger.i(
+            "sendPrompt: sanitized",
+            mapOf(
+                "chatId" to chatId,
+                "length" to sanitizedPrompt.length,
+                "changed" to (sanitizedPrompt != prompt)
+            )
+        )
 
         executeWithRetry(
             operation = {
@@ -370,13 +397,27 @@ class ChatViewModel @Inject constructor(
             baseDelayMs = 2000,
             onRetry = { attempt, error ->
                 emitToast("Retry $attempt/2: $error", true)
+                Logger.w(
+                    "sendPrompt: retry",
+                    mapOf("chatId" to chatId, "attempt" to attempt, "error" to error)
+                )
             },
             onSuccess = { /* Success handled in performSendPrompt */ },
             onFailure = { error ->
                 emitToast("Failed to send message: $error", true)
                 updateStreamingState { StreamingUiState() }
+                Logger.e(
+                    "sendPrompt: failed",
+                    mapOf("chatId" to chatId, "error" to error)
+                )
             }
         )
+    }
+
+    fun cancelGeneration() {
+        cancelActiveJobs()
+        updateStreamingState { StreamingUiState() }
+        emitToast("Generation cancelled", false)
     }
 
     private suspend fun performSendPrompt(chatId: Long, prompt: String): OperationResult<Unit> = coroutineScope {
@@ -387,6 +428,18 @@ class ChatViewModel @Inject constructor(
             val history = runCatching {
                 repository.listMessages(chatId)
             }.getOrDefault(emptyList())
+
+            Logger.i(
+                "performSendPrompt: prepared_state",
+                mapOf(
+                    "chatId" to chatId,
+                    "historyCount" to history.size,
+                    "temperature" to stateSnapshot.temperature,
+                    "topP" to stateSnapshot.topP,
+                    "topK" to stateSnapshot.topK,
+                    "maxTokens" to stateSnapshot.maxTokens
+                )
+            )
 
             // Save user message and start RAG retrieval in parallel
             val userMessageDeferred = async(Dispatchers.IO) {
@@ -407,9 +460,19 @@ class ChatViewModel @Inject constructor(
 
             // RAG retrieval in background (non-blocking)
             val ragDeferred = async(Dispatchers.IO) {
-                runCatching {
+                val startNs = System.nanoTime()
+                val docs = runCatching {
                     retriever.retrieve(repository.database(), prompt, topK = 6)
                 }.getOrDefault(emptyList())
+                Logger.i(
+                    "performSendPrompt: rag_fetch_completed",
+                    mapOf(
+                        "chatId" to chatId,
+                        "results" to docs.size,
+                        "durationMs" to ((System.nanoTime() - startNs) / 1_000_000)
+                    )
+                )
+                docs
             }
 
             // Wait for user message save to complete
@@ -430,7 +493,26 @@ class ChatViewModel @Inject constructor(
                 )
             )
 
+            Logger.i(
+                "performSendPrompt: prompt_composed",
+                mapOf(
+                    "chatId" to chatId,
+                    "templateId" to composition.template.id,
+                    "promptLength" to composition.prompt.text.length,
+                    "stopSequences" to composition.prompt.stopSequences.size
+                )
+            )
+
             val parser = ReasoningParser(onVisibleToken = {})
+            var loggedFirstToken = false
+
+            Logger.i(
+                "performSendPrompt: stream_start",
+                mapOf(
+                    "chatId" to chatId,
+                    "promptLength" to composition.prompt.text.length
+                )
+            )
 
             modelRepository.streamWithCache(
                 chatId = chatId,
@@ -445,6 +527,16 @@ class ChatViewModel @Inject constructor(
             ).collect { event ->
                 when (event) {
                     is EngineStreamEvent.Token -> {
+                        if (!loggedFirstToken && event.text.isNotEmpty()) {
+                            loggedFirstToken = true
+                            Logger.i(
+                                "performSendPrompt: first_token",
+                                mapOf(
+                                    "chatId" to chatId,
+                                    "chars" to event.text.length
+                                )
+                            )
+                        }
                         parser.handle(event.text)
                         val snapshot = parser.snapshot()
                         updateStreamingState {
@@ -460,6 +552,18 @@ class ChatViewModel @Inject constructor(
                     }
 
                     is EngineStreamEvent.Terminal -> {
+                        Logger.i(
+                            "performSendPrompt: terminal",
+                            mapOf(
+                                "chatId" to chatId,
+                                "promptTokens" to event.metrics.promptTokens,
+                                "generationTokens" to event.metrics.generationTokens,
+                                "ttfsMs" to event.metrics.ttfsMs,
+                                "totalMs" to event.metrics.totalMs,
+                                "stopReason" to event.metrics.stopReason,
+                                "truncated" to event.metrics.truncated
+                            )
+                        )
                         val parseResult = parser.result()
                         val finalText = parseResult.visible
                         val reasoningText = parseResult.reasoning
@@ -500,13 +604,26 @@ class ChatViewModel @Inject constructor(
                     }
                 }
             }
-
+            Logger.i(
+                "performSendPrompt: success",
+                mapOf("chatId" to chatId)
+            )
             OperationResult.Success(Unit)
+        } catch (e: CancellationException) {
+            updateStreamingState { StreamingUiState() }
+            throw e
         } catch (e: Exception) {
             // Clean up on error
             runCatching { modelRepository.clearKv(chatId) }
             updateStreamingState { StreamingUiState() }
-
+            Logger.e(
+                "performSendPrompt: exception",
+                mapOf(
+                    "chatId" to chatId,
+                    "error" to (e.message ?: "unknown")
+                ),
+                e
+            )
             OperationResult.Failure("Message generation failed: ${e.message ?: "Unknown error"}")
         }
     }

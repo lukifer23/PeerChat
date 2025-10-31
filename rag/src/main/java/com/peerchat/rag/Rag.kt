@@ -7,43 +7,48 @@ import com.peerchat.data.db.PeerDatabase
 import com.peerchat.engine.EngineNative
 import com.peerchat.engine.EngineRuntime
 import java.security.MessageDigest
+import java.util.LinkedHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
-// Enhanced tokenizer cache for performance optimization
-private val tokenCountCache = ConcurrentHashMap<String, Int>()
-private val embeddingCache = ConcurrentHashMap<String, FloatArray>()
+// Token & embedding caches with LRU eviction under bounded memory
 private val cacheLock = ReentrantReadWriteLock()
-private const val MAX_TOKEN_CACHE_SIZE = 10000
-private const val MAX_EMBEDDING_CACHE_SIZE = 1000
-private var lastCacheCleanup = System.currentTimeMillis()
+private val tokenCountCache = object : LinkedHashMap<String, Int>(256, 0.75f, true) {}
+private val embeddingCache = object : LinkedHashMap<String, FloatArray>(256, 0.75f, true) {}
+private var embeddingCacheBytes: Long = 0
+private val docScoreCache = object : LinkedHashMap<Long, CandidateScore>(512, 0.75f, true) {}
 
-// Intelligent cache management with LRU eviction
-private fun evictCacheIfNeeded() {
-    val now = System.currentTimeMillis()
-    if (now - lastCacheCleanup < 300000) return // Only clean every 5 minutes
-    lastCacheCleanup = now
+private const val MAX_TOKEN_CACHE_ENTRIES = 5000
+private const val MAX_EMBEDDING_CACHE_ENTRIES = 1500
+private const val MAX_EMBEDDING_CACHE_BYTES: Long = 32L * 1024L * 1024L // ~32 MB
+private const val MAX_DOC_SCORE_ENTRIES = 2000
 
-    cacheLock.write {
-        // Token cache eviction
-        if (tokenCountCache.size > MAX_TOKEN_CACHE_SIZE) {
-            val entriesToKeep = tokenCountCache.entries
-                .sortedByDescending { it.value } // Keep most frequently used
-                .take(MAX_TOKEN_CACHE_SIZE / 2)
-            tokenCountCache.clear()
-            entriesToKeep.forEach { tokenCountCache[it.key] = it.value }
-        }
+private data class CandidateScore(var score: Float, var updatedAtMs: Long)
 
-        // Embedding cache eviction (more aggressive due to memory usage)
-        if (embeddingCache.size > MAX_EMBEDDING_CACHE_SIZE) {
-            embeddingCache.clear() // Clear entirely to free memory
-        }
+fun interface RagEmbeddingIndex {
+    fun query(query: FloatArray, topK: Int): List<Long>
+}
+
+private object EmbeddingIndexRegistry {
+    private val delegate = AtomicReference<RagEmbeddingIndex?>(null)
+
+    fun register(index: RagEmbeddingIndex) {
+        delegate.set(index)
+    }
+
+    fun clear() {
+        delegate.set(null)
+    }
+
+    fun query(query: FloatArray, topK: Int): List<Long> {
+        val index = delegate.get() ?: return emptyList()
+        return runCatching { index.query(query, topK) }.getOrDefault(emptyList())
     }
 }
 
@@ -52,7 +57,9 @@ private fun countTokensCached(text: String): Int {
     val cacheKey = sha256(text).take(16) // Use hash prefix as key
 
     cacheLock.read {
-        tokenCountCache[cacheKey]?.let { return it }
+        tokenCountCache[cacheKey]?.let { cached ->
+            return cached
+        }
     }
 
     val count = runCatching { EngineNative.countTokens(text) }.getOrElse {
@@ -61,9 +68,8 @@ private fun countTokensCached(text: String): Int {
 
     cacheLock.write {
         tokenCountCache[cacheKey] = count
+        trimTokenCacheLocked()
     }
-
-    evictCacheIfNeeded()
     return count
 }
 
@@ -82,9 +88,10 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
     cacheLock.read {
         texts.forEachIndexed { index, text ->
             val cacheKey = sha256(text).take(32)
-            embeddingCache[cacheKey]?.let { cached ->
+            val cached = embeddingCache[cacheKey]
+            if (cached != null) {
                 results[index] = cached.copyOf()
-            } ?: run {
+            } else {
                 uncachedTexts.add(text)
                 uncachedIndices.add(index)
             }
@@ -105,18 +112,29 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
                 val cacheKey = sha256(text).take(32)
 
                 if (embedding.isNotEmpty()) {
-                    embeddingCache[cacheKey] = embedding.copyOf()
-                    results[textIndex] = embedding.copyOf()
+                    putEmbeddingLocked(cacheKey, embedding)
                 }
+                results[textIndex] = embedding.copyOf()
             }
         }
     }
 
-    evictCacheIfNeeded()
     return results
 }
 
 object RagService {
+
+    fun registerAnnIndex(index: (FloatArray, Int) -> List<Long>) {
+        EmbeddingIndexRegistry.register(RagEmbeddingIndex { query, topK -> index(query, topK) })
+    }
+
+    fun registerAnnIndex(index: RagEmbeddingIndex) {
+        EmbeddingIndexRegistry.register(index)
+    }
+
+    fun clearAnnIndex() {
+        EmbeddingIndexRegistry.clear()
+    }
 
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
         val engineStatus = EngineRuntime.status.value
@@ -175,50 +193,42 @@ object RagService {
 
         val qv = embedCached(arrayOf(query)).firstOrNull() ?: return emptyList()
 
-        // Process embeddings in highly optimized batches with early termination
-        val batchSize = 200 // Smaller batches for better memory efficiency
-        val semanticScores = HashMap<Long, Float>(topK * 2) // Pre-allocate reasonable capacity
-        var offset = 0
-        var processedCount = 0
-        val maxToProcess = min(5000, db.embeddingDao().count()) // Limit total processing for performance
+        val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 6) // Get more candidates for better ranking
+        val candidateEmbeddings = LinkedHashMap<Long, com.peerchat.data.db.Embedding>()
 
-        while (processedCount < maxToProcess) {
-            val batch = db.embeddingDao().listPaginated(batchSize, offset)
-            if (batch.isEmpty()) break
+        val annIds = EmbeddingIndexRegistry.query(qv, max(topK * 5, 32))
+        if (annIds.isNotEmpty()) {
+            val annEmbeddings = db.embeddingDao().getByIds(annIds.distinct().take(256))
+            annEmbeddings.forEach { candidateEmbeddings.putIfAbsent(it.id, it) }
+        }
 
-            // Calculate semantic scores with SIMD-friendly operations
-            for (emb in batch) {
-                if (emb.dim > 0 && emb.vector.isNotEmpty()) {
-                    val v = bytesToFloatArray(emb.vector)
-                    val similarity = cosine(qv, v, emb.norm)
+        val docIds = lexicalMatches.mapNotNull { it.docId }.distinct().take(64)
+        if (docIds.isNotEmpty()) {
+            val byDoc = db.embeddingDao().getByDocIds(docIds)
+            byDoc.forEach { candidateEmbeddings[it.id] = it }
+        }
 
-                    // Use a dynamic threshold that increases as we find better matches
-                    val minSimilarity = when {
-                        semanticScores.size < topK -> 0.05f // Keep more candidates initially
-                        semanticScores.values.minOrNull() ?: 0f > 0.3f -> 0.2f // Higher threshold for good matches
-                        else -> 0.1f // Standard threshold
-                    }
-
-                    if (similarity > minSimilarity) {
-                        semanticScores[emb.id] = similarity
-
-                        // Maintain only top candidates to reduce memory usage
-                        if (semanticScores.size > topK * 3) {
-                            val sorted = semanticScores.entries.sortedByDescending { it.value }
-                            semanticScores.clear()
-                            sorted.take(topK * 2).forEach { semanticScores[it.key] = it.value }
-                        }
-                    }
-                }
-                processedCount++
+        val desiredCandidates = max(topK * 12, candidateEmbeddings.size)
+        if (candidateEmbeddings.size < desiredCandidates) {
+            val batchSize = 200
+            var offset = 0
+            while (candidateEmbeddings.size < desiredCandidates) {
+                val batch = db.embeddingDao().listPaginated(batchSize, offset)
+                if (batch.isEmpty()) break
+                batch.forEach { candidateEmbeddings.putIfAbsent(it.id, it) }
+                offset += batch.size
             }
+        }
 
-            offset += batch.size
-            if (batch.size < batchSize) break
+        val semanticScores = HashMap<Long, Float>(candidateEmbeddings.size.coerceAtLeast(topK * 2))
+        candidateEmbeddings.values.forEach { emb ->
+            if (emb.dim <= 0 || emb.vector.isEmpty()) return@forEach
+            val v = bytesToFloatArray(emb.vector)
+            val similarity = cosine(qv, v, emb.norm)
+            semanticScores[emb.id] = similarity
         }
 
         // Get lexical matches (FTS search) with improved scoring
-        val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 6) // Get more candidates for better ranking
         val lexicalScores = HashMap<Long, Float>()
 
         // Calculate TF-IDF inspired lexical scores
@@ -250,6 +260,7 @@ object RagService {
 
             if (chunk.embeddingId != null && score > 0.05f) { // Only keep meaningful scores
                 lexicalScores[chunk.embeddingId!!] = score
+                chunk.docId?.let { recordDocScore(it, score) }
             }
         }
 
@@ -262,7 +273,10 @@ object RagService {
         for (id in allIds) {
             val semanticScore = semanticScores[id] ?: 0f
             val lexicalScore = lexicalScores[id] ?: 0f
-            val combinedScore = semanticScore * alphaSemantic + lexicalScore * alphaLexical
+            val docBonus = candidateEmbeddings[id]?.docId?.let { docScore(it) } ?: 0f
+            val combinedScore = semanticScore * alphaSemantic +
+                lexicalScore * alphaLexical +
+                docBonus * 0.1f
             fused.add(id to combinedScore)
         }
 
@@ -621,4 +635,59 @@ private fun bytesToFloatArray(b: ByteArray): FloatArray {
     val out = FloatArray(b.size / 4)
     for (i in out.indices) out[i] = bb.getFloat()
     return out
+}
+
+private fun trimTokenCacheLocked() {
+    if (tokenCountCache.size <= MAX_TOKEN_CACHE_ENTRIES) return
+    val iterator = tokenCountCache.entries.iterator()
+    while (tokenCountCache.size > MAX_TOKEN_CACHE_ENTRIES && iterator.hasNext()) {
+        iterator.next()
+        iterator.remove()
+    }
+}
+
+private fun putEmbeddingLocked(key: String, embedding: FloatArray) {
+    val existing = embeddingCache.put(key, embedding.copyOf())
+    if (existing != null) {
+        embeddingCacheBytes -= (existing.size * 4L)
+    }
+    embeddingCacheBytes += (embedding.size * 4L)
+    if (embeddingCacheBytes <= MAX_EMBEDDING_CACHE_BYTES && embeddingCache.size <= MAX_EMBEDDING_CACHE_ENTRIES) {
+        return
+    }
+    val iterator = embeddingCache.entries.iterator()
+    while ((embeddingCacheBytes > MAX_EMBEDDING_CACHE_BYTES || embeddingCache.size > MAX_EMBEDDING_CACHE_ENTRIES) && iterator.hasNext()) {
+        val eldest = iterator.next()
+        embeddingCacheBytes -= (eldest.value.size * 4L)
+        iterator.remove()
+    }
+    if (embeddingCacheBytes < 0) embeddingCacheBytes = 0
+}
+
+private fun recordDocScore(docId: Long, score: Float) {
+    cacheLock.write {
+        val existing = docScoreCache[docId]
+        val now = System.currentTimeMillis()
+        if (existing == null || score > existing.score) {
+            docScoreCache[docId] = CandidateScore(score, now)
+        } else {
+            existing.updatedAtMs = now
+        }
+        trimDocScoresLocked()
+    }
+}
+
+private fun docScore(docId: Long): Float {
+    cacheLock.read {
+        return docScoreCache[docId]?.score ?: 0f
+    }
+}
+
+private fun trimDocScoresLocked() {
+    if (docScoreCache.size <= MAX_DOC_SCORE_ENTRIES) return
+    val iterator = docScoreCache.entries.iterator()
+    while (docScoreCache.size > MAX_DOC_SCORE_ENTRIES && iterator.hasNext()) {
+        iterator.next()
+        iterator.remove()
+    }
 }

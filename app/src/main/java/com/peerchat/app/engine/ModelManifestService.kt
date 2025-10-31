@@ -6,6 +6,8 @@ import com.peerchat.templates.TemplateCatalog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -18,6 +20,7 @@ class ModelManifestService(
 ) {
     // Cache for file metadata to avoid recomputation
     private val metadataCache = mutableMapOf<String, Pair<Long, JSONObject>>() // path -> (fileModified, metadata)
+    private val metadataLock = Mutex()
 
     fun manifestsFlow(): Flow<List<ModelManifest>> = repository.observeManifests()
 
@@ -29,78 +32,81 @@ class ModelManifestService(
         sourceUrl: String? = null,
         isDefault: Boolean = false,
     ) = withContext(Dispatchers.IO) {
-        val file = File(path)
-        if (!file.exists()) return@withContext
+        metadataLock.withLock {
+            val file = File(path)
+            if (!file.exists()) return@withLock
 
-        val name = file.nameWithoutExtension
-        val existing = repository.getByName(name)
-        val fileModified = file.lastModified()
-        
-        // Use cached metadata if file hasn't changed
-        val cachedMetadata = metadataCache[path]?.takeIf { it.first == fileModified }?.second
-        
-        val metaObject = modelMetaJson?.takeIf { it.isNotBlank() }?.let {
-            runCatching { JSONObject(it) }.getOrNull()
-        } ?: cachedMetadata ?: existing?.metadataJson?.let { runCatching { JSONObject(it) }.getOrNull() }
+            val name = file.nameWithoutExtension
+            val existing = repository.getByName(name)
+            val fileModified = file.lastModified()
 
-        // Only compute SHA-256 if checksum not in metadata or file changed
-        val checksum = if (existing != null && 
-            existing.checksumSha256.isNotBlank() && 
-            fileModified == (existing.metadataJson.let { 
-                runCatching { JSONObject(it) }.getOrNull()?.optLong("lastScanned") 
-            } ?: 0L)
-        ) {
-            existing.checksumSha256
-        } else {
-            computeSha256(file)
-        }
-        
-        val family = extractFamily(metaObject) ?: existing?.family ?: "unknown"
-        val contextLen = extractContextLength(metaObject) ?: existing?.contextLength ?: 0
-        
-        val metadata = (metaObject ?: JSONObject()).apply {
-            put("checksum", checksum)
-            put("fileExists", true)
-            put("lastScanned", System.currentTimeMillis())
-            
-            // Lazy template detection - only if not already detected
-            if (!has("detectedTemplateId") || optString("detectedTemplateId").isBlank()) {
-                val detectionSource = metaObject?.toString()
-                    ?: modelMetaJson
-                    ?: existing?.metadataJson
-                if (detectionSource != null) {
-                    val modelMetadata = TemplateCatalog.parseMetadata(detectionSource)
+            val cached = metadataCache[path]?.takeIf { it.first == fileModified }?.second
+            val baseMetadataJson = when {
+                !modelMetaJson.isNullOrBlank() -> modelMetaJson
+                cached != null -> cached.toString()
+                existing != null -> existing.metadataJson
+                else -> null
+            }
+
+            val metadata = baseMetadataJson
+                ?.let { runCatching { JSONObject(it) }.getOrNull() }
+                ?: JSONObject()
+
+            val sizeBytes = file.length()
+            val existingChecksum = existing?.checksumSha256?.takeIf { it.isNotBlank() }
+            val cachedChecksum = metadata.optString("checksum").takeIf { it.isNotBlank() }
+            val existingSizeMatches = existing?.sizeBytes == sizeBytes
+            val checksum = when {
+                cachedChecksum != null && existingSizeMatches -> cachedChecksum
+                existingChecksum != null && existingSizeMatches -> existingChecksum
+                else -> computeSha256(file)
+            }
+
+            metadata.put("checksum", checksum)
+            metadata.put("fileExists", true)
+            metadata.put("lastScanned", System.currentTimeMillis())
+
+            if (!metadata.has("detectedTemplateId") || metadata.optString("detectedTemplateId").isBlank()) {
+                val detectionSource = when {
+                    !modelMetaJson.isNullOrBlank() -> modelMetaJson
+                    baseMetadataJson != null -> baseMetadataJson
+                    else -> null
+                }
+                detectionSource?.let { raw ->
+                    val modelMetadata = TemplateCatalog.parseMetadata(raw)
                     val detectedTemplate = TemplateCatalog.detect(modelMetadata)
-                    put("detectedTemplateId", detectedTemplate)
+                    metadata.put("detectedTemplateId", detectedTemplate)
                     TemplateCatalog.resolve(detectedTemplate)?.let { template ->
-                        put("detectedTemplateLabel", template.displayName)
-                        put("detectedTemplateStops", template.stopSequences)
+                        metadata.put("detectedTemplateLabel", template.displayName)
+                        metadata.put("detectedTemplateStops", template.stopSequences)
                     }
-                    modelMetadata.arch?.let { putOpt("arch", it) }
-                    modelMetadata.chatTemplate?.let { putOpt("chatTemplate", it) }
-                    modelMetadata.tokenizerModel?.let { putOpt("tokenizerModel", it) }
-                    modelMetadata.tags?.let { putOpt("tags", it) }
+                    modelMetadata.arch?.let { metadata.putOpt("arch", it) }
+                    modelMetadata.chatTemplate?.let { metadata.putOpt("chatTemplate", it) }
+                    modelMetadata.tokenizerModel?.let { metadata.putOpt("tokenizerModel", it) }
+                    modelMetadata.tags?.let { metadata.putOpt("tags", it) }
                 }
             }
-        }
-        
-        // Cache metadata
-        metadataCache[path] = fileModified to metadata
 
-        val manifest = ModelManifest(
-            id = existing?.id ?: 0,
-            name = name,
-            filePath = file.absolutePath,
-            family = family,
-            sizeBytes = file.length(),
-            checksumSha256 = checksum,
-            contextLength = contextLen,
-            importedAt = existing?.importedAt ?: System.currentTimeMillis(),
-            sourceUrl = sourceUrl ?: existing?.sourceUrl,
-            metadataJson = metadata.toString(),
-            isDefault = existing?.isDefault ?: isDefault,
-        )
-        repository.upsert(manifest)
+            val family = extractFamily(metadata) ?: existing?.family ?: "unknown"
+            val contextLen = extractContextLength(metadata) ?: existing?.contextLength ?: 0
+
+            metadataCache[path] = fileModified to JSONObject(metadata.toString())
+
+            val manifest = ModelManifest(
+                id = existing?.id ?: 0,
+                name = name,
+                filePath = file.absolutePath,
+                family = family,
+                sizeBytes = sizeBytes,
+                checksumSha256 = checksum,
+                contextLength = contextLen,
+                importedAt = existing?.importedAt ?: System.currentTimeMillis(),
+                sourceUrl = sourceUrl ?: existing?.sourceUrl,
+                metadataJson = metadata.toString(),
+                isDefault = existing?.isDefault ?: isDefault,
+            )
+            repository.upsert(manifest)
+        }
     }
 
     suspend fun deleteManifest(manifest: ModelManifest, removeFile: Boolean) = withContext(Dispatchers.IO) {

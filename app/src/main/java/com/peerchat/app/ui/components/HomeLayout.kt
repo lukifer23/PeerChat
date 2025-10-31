@@ -253,7 +253,6 @@ private fun ChatsSection(
                                 "Open" to { onOpenChat(chat.id, chat.folderId) },
                                 "Rename" to { homeViewModel.showRenameChatDialog(chat.id, chat.title) },
                                 "Move" to { homeViewModel.showMoveChatDialog(chat.id) },
-                                "Fork" to { homeViewModel.showForkChatDialog(chat.id) },
                                 "Delete" to { homeViewModel.showDeleteChatDialog(chat.id, chat.title) }
                             )
                         )

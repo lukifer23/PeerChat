@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="notification_model_download_channel_name">Model downloads</string>
+    <string name="notification_model_download_channel_description">Notifications for model downloads</string>
+    <string name="notification_model_download_title">Model download</string>
+    <string name="notification_model_download_preparing">Preparing %1$s</string>
+    <string name="notification_model_download_progress">%1$s • %2$d%%</string>
+</resources>

@@ -45,6 +45,7 @@ fun ChatScreen(
     messages: List<Message>,
     streaming: StreamingUiState,
     onSend: (String) -> Unit,
+    onCancel: () -> Unit,
 ) {
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
     var selectedReasoningMessage by remember { mutableStateOf<Message?>(null) }
@@ -101,6 +102,12 @@ fun ChatScreen(
             horizontalArrangement = Arrangement.spacedBy(spacing.small),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isStreaming) {
+                TextButton(
+                    onClick = onCancel,
+                    enabled = enabled
+                ) { Text("Cancel") }
+            }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },

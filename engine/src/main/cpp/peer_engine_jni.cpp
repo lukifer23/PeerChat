@@ -46,6 +46,8 @@ struct EngineState {
     std::mutex mutex;
     llama_model * model = nullptr;
     llama_context * ctx = nullptr;
+    llama_context * embed_ctx = nullptr;
+    std::string model_path;
     int n_ctx = 4096;
     int n_threads = 4;
     int n_gpu_layers = 0;
@@ -152,6 +154,40 @@ bool ensure_backend_init() {
     return true;
 }
 
+bool ensure_embedding_context_locked() {
+    if (g_state.embed_ctx) {
+        return true;
+    }
+    if (!g_state.model) {
+        LOGE("embedding context requested without loaded model");
+        return false;
+    }
+
+    llama_context_params params = llama_context_default_params();
+    params.n_ctx = g_state.n_ctx;
+    params.n_threads = g_state.n_threads;
+    params.n_threads_batch = g_state.n_threads;
+    params.embeddings = true;
+
+    if (g_state.use_vulkan) {
+        params.n_batch = std::min(1024U, static_cast<uint32_t>(params.n_ctx) / 4);
+        params.n_ubatch = std::min(256U, params.n_batch / 4);
+        params.offload_kqv = true;
+    } else {
+        params.n_batch = std::min(256U, static_cast<uint32_t>(params.n_ctx) / 8);
+        params.n_ubatch = std::min(64U, params.n_batch / 4);
+    }
+
+    llama_context * embed = llama_init_from_model(g_state.model, params);
+    if (!embed) {
+        LOGE("failed to create embedding context");
+        return false;
+    }
+    llama_set_n_threads(embed, g_state.n_threads, g_state.n_threads);
+    g_state.embed_ctx = embed;
+    return true;
+}
+
 bool file_exists(const char * path) {
     if (!path) return false;
     struct stat st {};
@@ -173,6 +209,11 @@ void unload_locked() {
     g_state.should_abort.store(false, std::memory_order_relaxed);
     
     // Clean up context
+    g_state.model_path.clear();
+    if (g_state.embed_ctx) {
+        llama_free(g_state.embed_ctx);
+        g_state.embed_ctx = nullptr;
+    }
     if (g_state.ctx) {
         llama_free(g_state.ctx);
         g_state.ctx = nullptr;
@@ -519,21 +560,8 @@ bool generate_internal(const GenerationRequest & req,
     return summary.success;
 }
 
-std::string detect_model_metadata(const char * path) {
-    if (!path || !file_exists(path)) {
-        return "{}";
-    }
-
-    ensure_backend_init();
-
-    llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;
-    mparams.use_mmap = true;
-    mparams.use_mlock = false;
-
-    llama_model * mdl = llama_model_load_from_file(path, mparams);
+static std::string build_model_metadata_json(llama_model * mdl) {
     if (!mdl) {
-        LOGE("failed to load model metadata for %s", path);
         return "{}";
     }
 
@@ -553,27 +581,55 @@ std::string detect_model_metadata(const char * path) {
     std::string capabilities = read_meta_value(mdl, "general.capabilities");
     std::string reasoning_flag = read_meta_value(mdl, "general.capabilities.reasoning");
 
-    bool reasoning = contains_case_insensitive(reasoning_flag, "true") ||
-                     contains_case_insensitive(capabilities, "reasoning") ||
-                     contains_case_insensitive(tags, "reasoning") ||
-                     contains_case_insensitive(chat_template, "<think>") ||
-                     contains_case_insensitive(chat_template, "<reasoning>");
+    const bool reasoning = contains_case_insensitive(reasoning_flag, "true") ||
+                           contains_case_insensitive(capabilities, "reasoning") ||
+                           contains_case_insensitive(tags, "reasoning") ||
+                           contains_case_insensitive(chat_template, "<think>") ||
+                           contains_case_insensitive(chat_template, "<reasoning>");
 
     std::ostringstream oss;
-    oss << "{" 
-        << "\"arch\":\"" << escape_json(arch) << "\"," 
+    oss << "{"
+        << "\"arch\":\"" << escape_json(arch) << "\","
         << "\"nCtxTrain\":" << n_ctx_train << ","
         << "\"nLayer\":" << n_layer << ","
         << "\"nEmbd\":" << n_embd << ","
         << "\"nVocab\":" << n_vocab << ","
-        << "\"chatTemplate\":\"" << escape_json(chat_template) << "\"," 
-        << "\"tokenizerModel\":\"" << escape_json(tokenizer_model) << "\"," 
+        << "\"chatTemplate\":\"" << escape_json(chat_template) << "\","
+        << "\"tokenizerModel\":\"" << escape_json(tokenizer_model) << "\","
         << "\"reasoning\":" << (reasoning ? "true" : "false") << ","
-        << "\"tags\":\"" << escape_json(tags) << "\"";
-    oss << "}";
-
-    llama_model_free(mdl);
+        << "\"tags\":\"" << escape_json(tags) << "\""
+        << "}";
     return oss.str();
+}
+
+std::string detect_model_metadata(const char * path) {
+    if (!path || !file_exists(path)) {
+        return "{}";
+    }
+
+    ensure_backend_init();
+
+    {
+        std::lock_guard<std::mutex> guard(g_state.mutex);
+        if (g_state.model && g_state.model_path == path) {
+            return build_model_metadata_json(g_state.model);
+        }
+    }
+
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0;
+    mparams.use_mmap = true;
+    mparams.use_mlock = false;
+
+    llama_model * mdl = llama_model_load_from_file(path, mparams);
+    if (!mdl) {
+        LOGE("failed to load model metadata for %s", path);
+        return "{}";
+    }
+
+    std::string json = build_model_metadata_json(mdl);
+    llama_model_free(mdl);
+    return json;
 }
 
 } // namespace
@@ -594,6 +650,7 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
                                                 jboolean useVulkan) {
     (void) thiz;
     const char * path = env->GetStringUTFChars(jModelPath, nullptr);
+    const std::string path_str = path ? path : "";
     if (!file_exists(path)) {
         LOGE("model path not found: %s", path ? path : "(null)");
         env->ReleaseStringUTFChars(jModelPath, path);
@@ -649,9 +706,15 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
     g_state.n_threads = cparams.n_threads;
     g_state.n_gpu_layers = useVulkan ? nGpuLayers : 0;
     g_state.use_vulkan = useVulkan;
+    g_state.model_path = path_str;
     reset_metrics_locked();
 
     llama_set_n_threads(g_state.ctx, g_state.n_threads, g_state.n_threads);
+    if (!ensure_embedding_context_locked()) {
+        LOGE("failed to prepare embedding context");
+        unload_locked();
+        return JNI_FALSE;
+    }
     LOGI("model loaded n_ctx=%d n_threads=%d gpu_layers=%d", g_state.n_ctx, g_state.n_threads, g_state.n_gpu_layers);
     return JNI_TRUE;
 }
@@ -753,30 +816,32 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
     (void) thiz;
     std::lock_guard<std::mutex> lock(g_state.mutex);
     jclass floatArrayClass = env->FindClass("[F");
-    if (!g_state.ctx || !g_state.model || !floatArrayClass) {
+    if (!g_state.model || !floatArrayClass) {
         return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
     }
 
-    ensure_backend_init();
-
-    llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = g_state.n_ctx;
-    cparams.n_threads = g_state.n_threads;
-    cparams.embeddings = true;
-
-    llama_context * ectx = llama_init_from_model(g_state.model, cparams);
-    if (!ectx) {
-        LOGE("failed to create embeddings context");
+    if (!ensure_embedding_context_locked()) {
         return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
     }
 
-    llama_set_n_threads(ectx, g_state.n_threads, g_state.n_threads);
-
+    llama_context * ectx = g_state.embed_ctx;
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
+    const bool has_encoder = llama_model_has_encoder(g_state.model);
+    const bool has_decoder = llama_model_has_decoder(g_state.model);
+    const auto pooling_type = llama_pooling_type(ectx);
+
+    if (has_encoder && has_decoder) {
+        LOGE("hybrid encoder/decoder models are not supported for embeddings");
+        return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
+    }
+
     jsize count = jTexts ? env->GetArrayLength(jTexts) : 0;
 
     std::vector<std::vector<float>> embeddings;
     embeddings.reserve(count);
+
+    llama_memory_clear(llama_get_memory(ectx), true);
+    llama_set_embeddings(ectx, true);
 
     for (jsize i = 0; i < count; ++i) {
         jstring jt = static_cast<jstring>(env->GetObjectArrayElement(jTexts, i));
@@ -794,13 +859,37 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         }
 
         llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-        if (llama_encode(ectx, batch) != 0) {
+
+        int rc = 0;
+        if (has_encoder && !has_decoder) {
+            rc = llama_encode(ectx, batch);
+        } else {
+            rc = llama_decode(ectx, batch);
+        }
+        if (rc != 0) {
             LOGE("llama_encode failed for embeddings");
             embeddings.emplace_back();
             continue;
         }
 
-        const float * emb = llama_get_embeddings(ectx);
+        const float * emb = nullptr;
+        switch (pooling_type) {
+            case LLAMA_POOLING_TYPE_NONE: {
+                const int32_t last_index = std::max(0, static_cast<int32_t>(tokens.size()) - 1);
+                emb = llama_get_embeddings_ith(ectx, last_index);
+                if (!emb) {
+                    emb = llama_get_embeddings(ectx);
+                }
+                break;
+            }
+            default: {
+                emb = llama_get_embeddings_seq(ectx, 0);
+                if (!emb) {
+                    emb = llama_get_embeddings(ectx);
+                }
+                break;
+            }
+        }
         const int dim = llama_model_n_embd(g_state.model);
         std::vector<float> vec;
         if (emb && dim > 0) {
@@ -808,6 +897,9 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         }
         embeddings.push_back(std::move(vec));
     }
+
+    llama_memory_clear(llama_get_memory(ectx), true);
+    llama_set_embeddings(ectx, false);
 
     jobjectArray outer = env->NewObjectArray(count, floatArrayClass, nullptr);
     for (jsize i = 0; i < count; ++i) {
@@ -820,8 +912,6 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         env->DeleteLocalRef(inner);
     }
 
-    // Clean up embedding context
-    llama_free(ectx);
     return outer;
 }
 

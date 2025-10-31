@@ -1,9 +1,15 @@
 package com.peerchat.app.engine
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import androidx.annotation.VisibleForTesting
+import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import androidx.work.ForegroundInfo
+import com.peerchat.app.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -12,11 +18,18 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import android.os.Build
+import android.content.pm.ServiceInfo
 
 class ModelDownloadWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
+
+    private val notificationId: Int by lazy {
+        val base = inputData.getString(KEY_FILE_NAME)?.hashCode() ?: 0
+        base xor id.hashCode()
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val url = inputData.getString(KEY_URL) ?: return@withContext Result.failure(workDataOf("error" to "Missing download URL"))
@@ -39,18 +52,21 @@ class ModelDownloadWorker(
         val destination = File(modelsDir, fileName)
         val tempFile = File(applicationContext.cacheDir, "$fileName.part")
 
-        // Clean up any stale partial downloads older than 1 hour
-        try {
-            applicationContext.cacheDir.listFiles { file ->
-                file.name.endsWith(".part") && file.lastModified() < System.currentTimeMillis() - 3600000
-            }?.forEach { it.delete() }
-        } catch (e: Exception) {
-            android.util.Log.w("ModelDownloadWorker", "Failed to clean up partial downloads", e)
-        }
+        updateForeground(fileName, downloaded = 0L, total = -1L)
+
+        ModelFileUtils.cleanupPartialDownloads(applicationContext)
 
         try {
             // Download (with resume support)
-            downloadToFile(url, tempFile)
+            downloadToFile(url, tempFile) { downloaded, total ->
+                setProgress(
+                    workDataOf(
+                        KEY_PROGRESS_DOWNLOADED to downloaded,
+                        KEY_PROGRESS_TOTAL to total
+                    )
+                )
+                updateForeground(fileName, downloaded, total)
+            }
             if (isStopped) {
                 tempFile.delete()
                 return@withContext Result.failure()
@@ -96,7 +112,22 @@ class ModelDownloadWorker(
         }
     }
 
-    private suspend fun downloadToFile(urlString: String, outFile: File) {
+    private suspend fun updateForeground(fileName: String, downloaded: Long, total: Long) {
+        val info = ModelDownloadNotifications.buildForegroundInfo(
+            context = applicationContext,
+            notificationId = notificationId,
+            fileName = fileName,
+            downloaded = downloaded,
+            total = total
+        )
+        setForeground(info)
+    }
+
+    private suspend fun downloadToFile(
+        urlString: String,
+        outFile: File,
+        onProgress: suspend (downloaded: Long, total: Long) -> Unit
+    ) {
         val url = URL(urlString)
         var connection: HttpURLConnection? = null
         try {
@@ -135,6 +166,7 @@ class ModelDownloadWorker(
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     var downloaded = existing
                     var lastReport = System.nanoTime()
+                    onProgress(downloaded, totalBytes)
                     while (true) {
                         val read = input.read(buffer)
                         if (read <= 0) break
@@ -142,64 +174,19 @@ class ModelDownloadWorker(
                         output.write(buffer, 0, read)
                         downloaded += read
                         val now = System.nanoTime()
-                        if (totalBytes > 0 && now - lastReport > 200_000_000L) {
+                        val shouldReport = totalBytes <= 0 || now - lastReport > 200_000_000L
+                        if (shouldReport) {
                             lastReport = now
-                            setProgress(workDataOf(
-                                KEY_PROGRESS_DOWNLOADED to downloaded,
-                                KEY_PROGRESS_TOTAL to totalBytes
-                            ))
+                            onProgress(downloaded, totalBytes)
                         }
                     }
                     output.fd.sync()
-                    // final progress suppressed
+                    onProgress(downloaded, totalBytes)
                 }
             }
         } finally {
             connection?.disconnect()
         }
-    }
-
-    private fun computeSha256(file: File): String {
-        val buffer = ByteArray(8192)
-        val digest = MessageDigest.getInstance("SHA-256")
-        FileInputStream(file).use { input ->
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
-    }
-
-    // Security validation functions
-    private fun isValidHttpsUrl(url: String): Boolean {
-        return try {
-            val uri = java.net.URI(url)
-            uri.scheme == "https" &&
-            uri.host?.isNotBlank() == true &&
-            // Only allow known trusted domains for model downloads
-            uri.host in listOf("huggingface.co", "cdn-lfs.huggingface.co", "github.com", "raw.githubusercontent.com") &&
-            uri.path?.let { path ->
-                // Prevent directory traversal in URL path
-                !path.contains("..") && !path.contains("\\")
-            } ?: false
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun isValidFilename(filename: String): Boolean {
-        return filename.isNotBlank() &&
-               filename.length <= 255 && // Prevent extremely long filenames
-               filename.matches(Regex("^[a-zA-Z0-9._-]+$")) && // Only safe characters
-               !filename.startsWith(".") && // No hidden files
-               !filename.contains("..") && // No directory traversal
-               filename.lowercase().endsWith(".gguf") // Only GGUF model files
-    }
-
-    private fun isValidSha256(hash: String): Boolean {
-        return hash.matches(Regex("^[a-fA-F0-9]{64}$"))
     }
 
     companion object {
@@ -211,5 +198,113 @@ class ModelDownloadWorker(
         const val KEY_PROGRESS_DOWNLOADED = "downloaded"
         const val KEY_PROGRESS_TOTAL = "total"
         private const val DEFAULT_BUFFER_SIZE = 8192
+
+        @JvmStatic
+        @VisibleForTesting
+        internal fun computeSha256(file: File): String {
+            val buffer = ByteArray(8192)
+            val digest = MessageDigest.getInstance("SHA-256")
+            FileInputStream(file).use { input ->
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+
+        @JvmStatic
+        @VisibleForTesting
+        internal fun isValidHttpsUrl(url: String): Boolean {
+            return try {
+                val uri = java.net.URI(url)
+                uri.scheme == "https" &&
+                    uri.host?.isNotBlank() == true &&
+                    // Only allow known trusted domains for model downloads
+                    uri.host in listOf("huggingface.co", "cdn-lfs.huggingface.co", "github.com", "raw.githubusercontent.com") &&
+                    uri.path?.let { path ->
+                        // Prevent directory traversal in URL path
+                        !path.contains("..") && !path.contains("\\")
+                    } ?: false
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        @JvmStatic
+        @VisibleForTesting
+        internal fun isValidFilename(filename: String): Boolean {
+            return filename.isNotBlank() &&
+                filename.length <= 255 &&
+                filename.matches(Regex("^[a-zA-Z0-9._-]+$")) &&
+                !filename.startsWith(".") &&
+                !filename.contains("..") &&
+                filename.lowercase().endsWith(".gguf")
+        }
+
+        @JvmStatic
+        @VisibleForTesting
+        internal fun isValidSha256(hash: String): Boolean {
+            return hash.matches(Regex("^[a-fA-F0-9]{64}$"))
+        }
+    }
+}
+
+private object ModelDownloadNotifications {
+    private const val CHANNEL_ID = "model_downloads"
+
+    fun buildForegroundInfo(
+        context: Context,
+        notificationId: Int,
+        fileName: String,
+        downloaded: Long,
+        total: Long
+    ): ForegroundInfo {
+        ensureChannel(context)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(context.getString(R.string.notification_model_download_title))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+
+        val isIndeterminate = total <= 0L || downloaded < 0L
+        val percent = if (!isIndeterminate && total > 0L) {
+            ((downloaded * 100L) / total).coerceIn(0, 100).toInt()
+        } else {
+            0
+        }
+
+        val contentText = if (isIndeterminate) {
+            context.getString(R.string.notification_model_download_preparing, fileName)
+        } else {
+            context.getString(R.string.notification_model_download_progress, fileName, percent)
+        }
+
+        builder.setContentText(contentText)
+        builder.setProgress(100, percent, isIndeterminate)
+
+        val notification = builder.build()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(notificationId, notification)
+        }
+    }
+
+    private fun ensureChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            context.getString(R.string.notification_model_download_channel_name),
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = context.getString(R.string.notification_model_download_channel_description)
+            setShowBadge(false)
+        }
+        manager.createNotificationChannel(channel)
     }
 }

@@ -2,16 +2,21 @@ package com.peerchat.app.engine
 
 import android.content.Context
 import androidx.lifecycle.asFlow
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 object ModelDownloadManager {
     private const val WORK_PREFIX = "model_download_"
+    private const val MAINTENANCE_WORK_NAME = "model_manifest_maintenance"
 
     fun enqueue(context: Context, model: DefaultModel) {
         val workName = workName(model)
@@ -35,4 +40,21 @@ object ModelDownloadManager {
     }
 
     fun workName(model: DefaultModel): String = WORK_PREFIX + model.id
+
+    fun scheduleMaintenance(context: Context) {
+        val constraints = Constraints.Builder()
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val request = PeriodicWorkRequestBuilder<ModelMaintenanceWorker>(12, TimeUnit.HOURS)
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(context)
+            .enqueueUniquePeriodicWork(
+                MAINTENANCE_WORK_NAME,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+    }
 }

@@ -167,4 +167,33 @@ object PeerDatabaseMigrations {
             db.execSQL("INSERT INTO rag_chunks_fts(rowid, text) SELECT id, text FROM rag_chunks")
         }
     }
+
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS benchmark_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    manifestId INTEGER NOT NULL,
+                    promptText TEXT NOT NULL,
+                    promptTokens INTEGER NOT NULL,
+                    generatedTokens INTEGER NOT NULL,
+                    ttftMs INTEGER NOT NULL,
+                    totalMs INTEGER NOT NULL,
+                    tps REAL NOT NULL,
+                    contextUsedPct REAL NOT NULL,
+                    errorMessage TEXT,
+                    runAt INTEGER NOT NULL,
+                    deviceInfo TEXT NOT NULL,
+                    FOREIGN KEY (manifestId) REFERENCES model_manifests(id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+
+            // Create indexes
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_benchmark_results_manifestId ON benchmark_results(manifestId)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_benchmark_results_runAt ON benchmark_results(runAt)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS index_benchmark_results_manifestId_runAt ON benchmark_results(manifestId, runAt)")
+        }
+    }
 }

@@ -227,6 +227,23 @@ class PeerChatRepository(private val database: PeerDatabase) {
         }
     }
 
+    // Benchmark operations
+    suspend fun insertBenchmarkResult(result: com.peerchat.data.db.BenchmarkResult): Long = withContext(Dispatchers.IO) {
+        database.benchmarkResultDao().insert(result)
+    }
+
+    suspend fun getRecentBenchmarkResults(manifestId: Long, limit: Int = 10): List<com.peerchat.data.db.BenchmarkResult> = withContext(Dispatchers.IO) {
+        val results = database.benchmarkResultDao().getRecentByManifest(manifestId)
+        if (limit > 0) results.take(limit) else results
+    }
+
+    fun observeBenchmarkResults(manifestId: Long): Flow<List<com.peerchat.data.db.BenchmarkResult>> =
+        database.benchmarkResultDao().observeByManifest(manifestId)
+
+    suspend fun deleteBenchmarkResults(manifestId: Long) = withContext(Dispatchers.IO) {
+        database.benchmarkResultDao().deleteByManifest(manifestId)
+    }
+
     companion object {
         fun from(context: android.content.Context): PeerChatRepository =
             PeerChatRepository(PeerDatabaseProvider.get(context))
