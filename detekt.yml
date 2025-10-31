@@ -1,0 +1,89 @@
+build:
+  maxIssues: 0
+  excludeCorrectable: true
+
+config:
+  validation: true
+  warningsAsErrors: true
+
+processors:
+  active: true
+  exclude:
+    - 'DetektProgressListener'
+
+console-reports:
+  active: true
+  exclude:
+    - 'FindingsReport'
+    - 'ComplexityReport'
+
+output-reports:
+  active: false
+
+style:
+  MagicNumber:
+    active: true
+    ignoreNamedArgument: true
+    ignoreEnums: true
+    ignoreConstantDeclaration: true
+    ignoreCompanionObjectPropertyDeclaration: true
+  WildcardImport:
+    active: true
+    excludeImports:
+      - 'kotlinx.coroutines.flow.*'
+  UnusedPrivateMember:
+    active: true
+    ignoreAnnotated:
+      - 'Preview'
+  ForbiddenComment:
+    active: true
+    values:
+      - 'TODO'
+      - 'FIXME'
+      - 'BUG'
+
+complexity:
+  LongMethod:
+    active: true
+    threshold: 80
+  LongParameterList:
+    active: true
+    threshold: 8
+    ignoreDefaultParameters: true
+  TooManyFunctions:
+    active: true
+    thresholdInClasses: 25
+    thresholdInObjects: 20
+    thresholdInFiles: 40
+
+naming:
+  PackageNaming:
+    active: true
+    excludes:
+      - '**/build/**'
+      - '**/generated/**'
+  TopLevelPropertyNaming:
+    constantPattern: '[A-Z][A-Z0-9_]*'
+  FunctionNaming:
+    ignoreAnnotated:
+      - 'Composable'
+
+exceptions:
+  SwallowedException:
+    active: true
+    allowedExceptionNameRegex: '_|(ignore|expected).*'
+
+coroutines:
+  GlobalCoroutineUsage:
+    active: true
+
+performance:
+  SpreadOperator:
+    active: true
+
+potential-bugs:
+  ImplicitDefaultLocale:
+    active: true
+  NullableToStringCall:
+    active: true
+

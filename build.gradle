@@ -1,30 +1,91 @@
-ext {
-    composeBom = "2024.10.00"
-    kotlinVersion = "1.9.24"
-    agpVersion = "8.6.1"
-    roomVersion = "2.6.1"
+plugins {
+    id 'com.diffplug.spotless'
 }
 
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
+spotless {
+    format 'misc', {
+        target '**/*.md', '**/.gitignore'
+        targetExclude '**/build/**', '**/.gradle/**'
+        trimTrailingWhitespace()
+        indentWithSpaces(4)
+        endWithNewline()
     }
-    dependencies {
-        classpath "com.android.tools.build:gradle:8.6.1"
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
+
+    kotlin {
+        target '**/*.kt'
+        targetExclude '**/build/**', '**/generated/**', 'config/spotless/**'
+        ktlint('1.2.1').editorConfigOverride([
+                'ktlint_standard_trailing-comma-on-call-site': 'disabled',
+                'ktlint_standard_trailing-comma-on-declaration-site': 'disabled'
+        ])
+        licenseHeaderFile rootProject.file('config/spotless/copyright.kt'), '(package|import|class|object|sealed|data|enum|fun|val|var)'
     }
-}
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-        maven { url 'https://jitpack.io' }
+
+    kotlinGradle {
+        target '**/*.kts'
+        targetExclude '**/build/**'
+        ktlint('1.2.1')
+    }
+
+    format 'cpp', {
+        target 'engine/src/main/cpp/**/*.cpp', 'engine/src/main/cpp/**/*.hpp', 'engine/src/main/cpp/**/*.h'
+        targetExclude '**/build/**', '**/generated/**', '**/llama/examples/**'
+        clangFormat('16.0.4')
     }
 }
 
-// Build caching optimization
-task cleanBuildCache(type: Delete) {
-    delete rootProject.buildDir
+subprojects { subproject ->
+    subproject.tasks.matching { it.name == 'clean' }.configureEach {
+        mustRunAfter(rootProject.tasks.named('clean'))
+    }
+
+    subproject.plugins.withId('org.jetbrains.kotlin.android') {
+        apply plugin: 'io.gitlab.arturbosch.detekt'
+
+        subproject.extensions.configure(io.gitlab.arturbosch.detekt.extensions.DetektExtension) { detektExt ->
+            detektExt.buildUponDefaultConfig = true
+            detektExt.config.setFrom(rootProject.files('detekt.yml'))
+            detektExt.autoCorrect = false
+            detektExt.parallel = true
+        }
+
+        subproject.tasks.withType(io.gitlab.arturbosch.detekt.Detekt).configureEach {
+            jvmTarget = '17'
+            reports.html.required.set(true)
+            reports.xml.required.set(false)
+            reports.txt.required.set(false)
+            reports.sarif.required.set(false)
+        }
+
+        subproject.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+            kotlinOptions {
+                jvmTarget = '17'
+                freeCompilerArgs += [
+                        '-Xjvm-default=all',
+                        '-opt-in=kotlin.RequiresOptIn',
+                        '-Xskip-metadata-version-check',
+                        '-Xinline-classes'
+                ]
+            }
+        }
+    }
+
+    subproject.plugins.withType(com.android.build.gradle.BasePlugin).configureEach {
+        subproject.extensions.configure(com.android.build.gradle.BaseExtension) { androidExt ->
+            androidExt.compileSdkVersion 34
+            androidExt.defaultConfig {
+                minSdk = 26
+                targetSdk = 34
+            }
+            androidExt.compileOptions {
+                sourceCompatibility = JavaVersion.VERSION_17
+                targetCompatibility = JavaVersion.VERSION_17
+            }
+        }
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
 }
 
