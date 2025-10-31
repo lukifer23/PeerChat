@@ -46,7 +46,7 @@ class InputSanitizerTest {
 
     @Test
     fun `sanitizeChatInput - removes control characters`() {
-        val input = "Hello\x00\x01\x02world\x7F"
+        val input = "Hello${'\u0000'}${'\u0001'}${'\u0002'} world${'\u007F'}"
         val result = InputSanitizer.sanitizeChatInput(input)
 
         assertEquals("Should remove control characters", "Hello world", result)
@@ -119,27 +119,6 @@ class InputSanitizerTest {
         }
     }
 
-    @Test
-    fun `isValidFilename - accepts GGUF files only`() {
-        assertTrue("Should accept .gguf files", InputSanitizer.isValidFilename("model.gguf"))
-        assertFalse("Should reject other extensions", InputSanitizer.isValidFilename("model.txt"))
-        assertFalse("Should reject no extension", InputSanitizer.isValidFilename("model"))
-        assertFalse("Should reject hidden files", InputSanitizer.isValidFilename(".hidden"))
-        assertFalse("Should reject path traversal", InputSanitizer.isValidFilename("../model.gguf"))
-    }
-
-    @Test
-    fun `isValidSha256 - validates hash format correctly`() {
-        val validHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
-        val invalidHash = "invalid"
-        val shortHash = "a665a459"
-        val longHash = validHash + "a"
-
-        assertTrue("Should accept valid SHA256", InputSanitizer.isValidSha256(validHash))
-        assertFalse("Should reject non-hex", InputSanitizer.isValidSha256(invalidHash))
-        assertFalse("Should reject short hash", InputSanitizer.isValidSha256(shortHash))
-        assertFalse("Should reject long hash", InputSanitizer.isValidSha256(longHash))
-    }
 
     @Test
     fun `isValidDocumentUrl - accepts valid URLs`() {

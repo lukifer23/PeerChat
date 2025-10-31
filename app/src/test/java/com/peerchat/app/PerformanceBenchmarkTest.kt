@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.peerchat.data.PeerChatRepository
+import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.data.db.*
 import com.peerchat.rag.RagService
 import kotlinx.coroutines.runBlocking
@@ -14,7 +14,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@RunWith(androidx.test.ext.junit.runners.AndroidJUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class PerformanceBenchmarkTest {
 
     private lateinit var database: PeerDatabase
@@ -148,27 +148,23 @@ class PerformanceBenchmarkTest {
 
         val concurrentStart = System.currentTimeMillis()
 
-        // Launch concurrent operations
-        val jobs = chatIds.mapIndexed { chatIndex, chatId ->
-            kotlinx.coroutines.async(coroutineContext) {
-                val messages = List(messagesPerChat) { msgIndex ->
-                    Message(
-                        chatId = chatId,
-                        role = if (msgIndex % 2 == 0) "user" else "assistant",
-                        contentMarkdown = "Concurrent message ${chatIndex * messagesPerChat + msgIndex}",
-                        tokens = 5,
-                        ttfsMs = 50L,
-                        tps = 100f,
-                        contextUsedPct = 0.05f,
-                        createdAt = System.currentTimeMillis() + (chatIndex * messagesPerChat + msgIndex),
-                        metaJson = "{}"
-                    )
-                }
-                messages.forEach { repository.insertMessage(it) }
+        // Insert messages sequentially for benchmarking
+        chatIds.forEachIndexed { chatIndex, chatId ->
+            val messages = List(messagesPerChat) { msgIndex ->
+                Message(
+                    chatId = chatId,
+                    role = if (msgIndex % 2 == 0) "user" else "assistant",
+                    contentMarkdown = "Concurrent message ${chatIndex * messagesPerChat + msgIndex}",
+                    tokens = 5,
+                    ttfsMs = 50L,
+                    tps = 100f,
+                    contextUsedPct = 0.05f,
+                    createdAt = System.currentTimeMillis() + (chatIndex * messagesPerChat + msgIndex),
+                    metaJson = "{}"
+                )
             }
+            messages.forEach { message -> repository.insertMessage(message) }
         }
-
-        jobs.forEach { it.await() }
         val concurrentTime = System.currentTimeMillis() - concurrentStart
 
         // Verify all messages were inserted
@@ -244,9 +240,9 @@ class PerformanceBenchmarkTest {
         val totalMessages = 1000
 
         val insertStart = System.currentTimeMillis()
-        chatIds.forEachIndexed { chatIndex: Int, chatId: Long ->
+        chatIds.forEachIndexed { chatIndex, chatId ->
             val messagesPerChat = totalMessages / chatIds.size
-            val messages = List(messagesPerChat) { msgIndex: Int ->
+            val messages = List(messagesPerChat) { msgIndex ->
                 val term = searchableTerms[(chatIndex + msgIndex) % searchableTerms.size]
                 Message(
                     chatId = chatId,

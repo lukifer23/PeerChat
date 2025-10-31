@@ -1,3 +1,36 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    plugins {
+        id 'com.android.application' version libs.versions.agp.get()
+        id 'com.android.library' version libs.versions.agp.get()
+        id 'org.jetbrains.kotlin.android' version libs.versions.kotlin.get()
+        id 'com.google.devtools.ksp' version libs.versions.ksp.get()
+        id 'com.google.dagger.hilt.android' version libs.versions.hilt.get()
+        id 'io.gitlab.arturbosch.detekt' version libs.versions.detekt.get()
+        id 'com.diffplug.spotless' version libs.versions.spotless.get()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+    versionCatalogs {
+        create('libs') {
+            from(files('gradle/libs.versions.toml'))
+        }
+    }
+}
+
+enableFeaturePreview('TYPESAFE_PROJECT_ACCESSORS')
+
 rootProject.name = "PeerChat"
 
 include ":app"

@@ -124,6 +124,7 @@ object InputSanitizer {
         Regex("<iframe[^>]*>.*?</iframe>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
         Regex("<object[^>]*>.*?</object>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
         Regex("<embed[^>]*>.*?</embed>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
+        Regex("<img[^>]*>", setOf(RegexOption.IGNORE_CASE)),
         Regex("<form[^>]*>.*?</form>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)),
         Regex("<input[^>]*>", setOf(RegexOption.IGNORE_CASE)),
         Regex("<meta[^>]*>", setOf(RegexOption.IGNORE_CASE)),

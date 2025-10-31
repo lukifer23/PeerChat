@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.peerchat.data.PeerChatRepository
+import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.data.db.*
 import com.peerchat.rag.RagService
 import kotlinx.coroutines.runBlocking
@@ -15,7 +15,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 
-@RunWith(androidx.test.ext.junit.runners.AndroidJUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class IntegrationTest {
 
     private lateinit var database: PeerDatabase
@@ -161,7 +161,7 @@ class IntegrationTest {
         // Test RAG search
         val searchResults = repository.searchChunks("artificial intelligence", limit = 10)
         assertTrue("Should find relevant chunks", searchResults.isNotEmpty())
-        assertTrue("Should contain AI text", searchResults.any { chunk -> chunk.text.contains("artificial intelligence") })
+        assertTrue("Should contain AI text", searchResults.any { it.text.contains("artificial intelligence") })
 
         // Test chunk retrieval by document
         val docChunks = repository.getChunksByDocument(docId)

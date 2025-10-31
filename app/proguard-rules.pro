@@ -129,3 +129,19 @@
 -dontwarn kotlinx.**
 -dontwarn org.jetbrains.annotations.**
 -dontwarn org.intellij.lang.annotations.**
+
+# Ignore missing optional dependencies
+-dontwarn com.gemalto.jp2.**
+-dontwarn org.bouncycastle.jsse.**
+-dontwarn org.conscrypt.**
+-dontwarn org.openjsse.**
+
+# Keep classes that might be accessed via reflection
+-keep class com.tom_roush.pdfbox.** { *; }
+-dontwarn com.tom_roush.pdfbox.**
+
+# Keep HTTP client classes
+-keep class okhttp3.** { *; }
+-keep class okio.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

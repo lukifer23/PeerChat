@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.peerchat.app.engine.ModelDownloadWorker
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test

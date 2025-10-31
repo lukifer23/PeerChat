@@ -3,7 +3,7 @@ package com.peerchat.data.db
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -23,7 +23,6 @@ private fun FloatArray.toByteArray(): ByteArray {
     return buffer.array()
 }
 
-@RunWith(AndroidJUnit4::class)
 class DatabaseTest {
 
     private lateinit var database: PeerDatabase
@@ -69,7 +68,7 @@ class DatabaseTest {
         assertTrue("Folder ID should be positive", folderId > 0)
 
         // Read folder
-        val folders = folderDao.observeAll().value
+        val folders = runBlocking { folderDao.observeAll().first() }
         assertEquals("Should have one folder", 1, folders.size)
         assertEquals("Folder name should match", "Test Folder", folders[0].name)
 
@@ -77,12 +76,12 @@ class DatabaseTest {
         val now = System.currentTimeMillis()
         folderDao.rename(folderId, "Updated Folder", now)
 
-        val updatedFolders = folderDao.observeAll().value
+        val updatedFolders = runBlocking { folderDao.observeAll().first() }
         assertEquals("Updated name should match", "Updated Folder", updatedFolders[0].name)
 
         // Delete folder
         folderDao.deleteById(folderId)
-        val emptyFolders = folderDao.observeAll().value
+        val emptyFolders = runBlocking { folderDao.observeAll().first() }
         assertTrue("Should be empty after deletion", emptyFolders.isEmpty())
     }
 
@@ -221,7 +220,7 @@ class DatabaseTest {
         assertTrue("Document ID should be positive", docId > 0)
 
         // Test retrieval
-        val documents = documentDao.observeAll().value
+        val documents = runBlocking { documentDao.observeAll().first() }
         assertEquals("Should have one document", 1, documents.size)
         assertEquals("Title should match", "Test Document", documents[0].title)
 
@@ -231,7 +230,7 @@ class DatabaseTest {
 
         // Delete document
         documentDao.delete(docId)
-        val emptyDocs = documentDao.observeAll().value
+        val emptyDocs = runBlocking { documentDao.observeAll().first() }
         assertTrue("Should be empty after deletion", emptyDocs.isEmpty())
     }
 

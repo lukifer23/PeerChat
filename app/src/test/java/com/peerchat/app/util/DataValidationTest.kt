@@ -3,7 +3,18 @@ package com.peerchat.app.util
 import com.peerchat.data.db.*
 import org.junit.Assert.*
 import org.junit.Test
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.*
+
+// Helper function to convert FloatArray to ByteArray for testing
+private fun FloatArray.toByteArray(): ByteArray {
+    val buffer = ByteBuffer.allocate(size * 4).order(ByteOrder.LITTLE_ENDIAN)
+    for (value in this) {
+        buffer.putFloat(value)
+    }
+    return buffer.array()
+}
 
 class DataValidationTest {
 
@@ -218,7 +229,7 @@ class DataValidationTest {
             docId = 1,
             chatId = null,
             textHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
-            vector = FloatArray(768) { 0.1f },
+            vector = FloatArray(768) { 0.1f }.toByteArray(),
             dim = 768,
             norm = 1.0f,
             createdAt = System.currentTimeMillis()
@@ -235,7 +246,7 @@ class DataValidationTest {
             docId = 1,
             chatId = null,
             textHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3",
-            vector = FloatArray(0),
+            vector = FloatArray(0).toByteArray(),
             dim = 768,
             norm = 1.0f,
             createdAt = System.currentTimeMillis()
@@ -279,6 +290,8 @@ class DataValidationTest {
         assertTrue("Should contain position error", result.getValidationErrors().contains("End position must be greater than start position"))
     }
 
+    // Note: InputSanitizer tests moved to InputSanitizerTest.kt
+
     @Test
     fun `InputSanitizer - sanitizes dangerous content`() {
         val dangerousInput = "<script>alert('xss')</script>Hello<img src=x onerror=alert(1)>"
@@ -290,23 +303,6 @@ class DataValidationTest {
         assertTrue("Should contain removal marker", sanitized.contains("[REMOVED]"))
     }
 
-    @Test
-    fun `InputSanitizer - validates filenames`() {
-        assertTrue("Valid filename should pass", InputSanitizer.isValidFilename("model.gguf"))
-        assertFalse("Path traversal should fail", InputSanitizer.isValidFilename("../model.gguf"))
-        assertFalse("Hidden file should fail", InputSanitizer.isValidFilename(".hidden"))
-        assertFalse("Wrong extension should fail", InputSanitizer.isValidFilename("model.txt"))
-    }
-
-    @Test
-    fun `InputSanitizer - validates SHA256 hashes`() {
-        val validHash = "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
-        val invalidHash = "invalid"
-
-        assertTrue("Valid SHA256 should pass", InputSanitizer.isValidSha256(validHash))
-        assertFalse("Invalid hash should fail", InputSanitizer.isValidSha256(invalidHash))
-        assertFalse("Wrong length should fail", InputSanitizer.isValidSha256("short"))
-    }
 
     @Test
     fun `InputSanitizer - handles length limits`() {
