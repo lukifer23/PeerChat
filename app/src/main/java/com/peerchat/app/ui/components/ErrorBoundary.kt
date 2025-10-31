@@ -190,3 +190,43 @@ class ToastManager {
 
 // Global toast manager instance
 val GlobalToastManager = ToastManager()
+
+/**
+ * Crash recovery manager for handling app restart scenarios
+ */
+class CrashRecoveryManager(private val context: android.content.Context) {
+
+    private val prefs = context.getSharedPreferences("crash_recovery", android.content.Context.MODE_PRIVATE)
+
+    fun saveAppState(state: AppRecoveryState) {
+        prefs.edit()
+            .putString("last_activity", state.lastActivity)
+            .putLong("timestamp", state.timestamp)
+            .putString("pending_operations", state.pendingOperations.joinToString(","))
+            .apply()
+    }
+
+    fun getLastAppState(): AppRecoveryState? {
+        val lastActivity = prefs.getString("last_activity", null) ?: return null
+        val timestamp = prefs.getLong("timestamp", 0)
+        val pendingOps = prefs.getString("pending_operations", "")?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+
+        return AppRecoveryState(lastActivity, timestamp, pendingOps)
+    }
+
+    fun clearRecoveryState() {
+        prefs.edit().clear().apply()
+    }
+
+    fun isRecentCrash(): Boolean {
+        val state = getLastAppState() ?: return false
+        val timeSinceCrash = System.currentTimeMillis() - state.timestamp
+        return timeSinceCrash < 30000 // 30 seconds
+    }
+}
+
+data class AppRecoveryState(
+    val lastActivity: String,
+    val timestamp: Long = System.currentTimeMillis(),
+    val pendingOperations: List<String> = emptyList()
+)

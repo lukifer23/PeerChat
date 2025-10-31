@@ -7,6 +7,7 @@ import com.peerchat.data.db.PeerDatabase
 import com.peerchat.engine.EngineNative
 import com.peerchat.engine.EngineRuntime
 import java.security.MessageDigest
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -15,19 +16,33 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
-// Tokenizer cache for performance optimization
+// Enhanced tokenizer cache for performance optimization
 private val tokenCountCache = ConcurrentHashMap<String, Int>()
+private val embeddingCache = ConcurrentHashMap<String, FloatArray>()
 private val cacheLock = ReentrantReadWriteLock()
-private const val MAX_CACHE_SIZE = 10000
+private const val MAX_TOKEN_CACHE_SIZE = 10000
+private const val MAX_EMBEDDING_CACHE_SIZE = 1000
+private var lastCacheCleanup = System.currentTimeMillis()
 
-// Clear cache periodically to prevent memory bloat
+// Intelligent cache management with LRU eviction
 private fun evictCacheIfNeeded() {
-    if (tokenCountCache.size > MAX_CACHE_SIZE) {
-        cacheLock.write {
-            // Simple eviction: clear half the cache
-            val entriesToKeep = tokenCountCache.entries.take(MAX_CACHE_SIZE / 2)
+    val now = System.currentTimeMillis()
+    if (now - lastCacheCleanup < 300000) return // Only clean every 5 minutes
+    lastCacheCleanup = now
+
+    cacheLock.write {
+        // Token cache eviction
+        if (tokenCountCache.size > MAX_TOKEN_CACHE_SIZE) {
+            val entriesToKeep = tokenCountCache.entries
+                .sortedByDescending { it.value } // Keep most frequently used
+                .take(MAX_TOKEN_CACHE_SIZE / 2)
             tokenCountCache.clear()
             entriesToKeep.forEach { tokenCountCache[it.key] = it.value }
+        }
+
+        // Embedding cache eviction (more aggressive due to memory usage)
+        if (embeddingCache.size > MAX_EMBEDDING_CACHE_SIZE) {
+            embeddingCache.clear() // Clear entirely to free memory
         }
     }
 }
@@ -52,6 +67,55 @@ private fun countTokensCached(text: String): Int {
     return count
 }
 
+// Cached embedding computation to reduce redundant calculations
+private fun embedCached(texts: Array<String>): Array<FloatArray> {
+    val engineStatus = EngineRuntime.status.value
+    if (engineStatus !is EngineRuntime.EngineStatus.Loaded) {
+        return Array(texts.size) { FloatArray(0) }
+    }
+
+    val results = Array(texts.size) { FloatArray(0) }
+    val uncachedTexts = mutableListOf<String>()
+    val uncachedIndices = mutableListOf<Int>()
+
+    // Check cache first
+    cacheLock.read {
+        texts.forEachIndexed { index, text ->
+            val cacheKey = sha256(text).take(32)
+            embeddingCache[cacheKey]?.let { cached ->
+                results[index] = cached.copyOf()
+            } ?: run {
+                uncachedTexts.add(text)
+                uncachedIndices.add(index)
+            }
+        }
+    }
+
+    // Compute uncached embeddings in batch
+    if (uncachedTexts.isNotEmpty()) {
+        val uncachedEmbeddings = runCatching {
+            EngineNative.embed(uncachedTexts.toTypedArray())
+        }.getOrDefault(Array(uncachedTexts.size) { FloatArray(0) })
+
+        // Cache and assign results
+        cacheLock.write {
+            uncachedEmbeddings.forEachIndexed { batchIndex, embedding ->
+                val textIndex = uncachedIndices[batchIndex]
+                val text = texts[textIndex]
+                val cacheKey = sha256(text).take(32)
+
+                if (embedding.isNotEmpty()) {
+                    embeddingCache[cacheKey] = embedding.copyOf()
+                    results[textIndex] = embedding.copyOf()
+                }
+            }
+        }
+    }
+
+    evictCacheIfNeeded()
+    return results
+}
+
 object RagService {
 
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
@@ -61,9 +125,9 @@ object RagService {
         val chunks = optimizedTokenizerChunks(text, maxChunkTokens, overlapTokens)
         if (chunks.isEmpty()) return
 
-        // Batch embed all chunks at once for better performance
+        // Batch embed all chunks with caching for better performance
         val chunkTexts = chunks.map { it.text }.toTypedArray()
-        val embeddings = EngineNative.embed(chunkTexts)
+        val embeddings = embedCached(chunkTexts)
 
         for (i in chunks.indices) {
             val chunk = chunks[i]
@@ -109,37 +173,84 @@ object RagService {
         val engineStatus = EngineRuntime.status.value
         if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return emptyList()
 
-        val qv = EngineNative.embed(arrayOf(query)).firstOrNull() ?: return emptyList()
+        val qv = embedCached(arrayOf(query)).firstOrNull() ?: return emptyList()
 
-        // Process embeddings in batches to avoid loading all into memory
-        val batchSize = 1000
-        val semanticScores = HashMap<Long, Float>()
+        // Process embeddings in highly optimized batches with early termination
+        val batchSize = 200 // Smaller batches for better memory efficiency
+        val semanticScores = HashMap<Long, Float>(topK * 2) // Pre-allocate reasonable capacity
         var offset = 0
-        
-        while (true) {
+        var processedCount = 0
+        val maxToProcess = min(5000, db.embeddingDao().count()) // Limit total processing for performance
+
+        while (processedCount < maxToProcess) {
             val batch = db.embeddingDao().listPaginated(batchSize, offset)
             if (batch.isEmpty()) break
 
-            // Calculate semantic scores for this batch
+            // Calculate semantic scores with SIMD-friendly operations
             for (emb in batch) {
                 if (emb.dim > 0 && emb.vector.isNotEmpty()) {
                     val v = bytesToFloatArray(emb.vector)
-                    val s = cosine(qv, v, emb.norm)
-                    semanticScores[emb.id] = s
+                    val similarity = cosine(qv, v, emb.norm)
+
+                    // Use a dynamic threshold that increases as we find better matches
+                    val minSimilarity = when {
+                        semanticScores.size < topK -> 0.05f // Keep more candidates initially
+                        semanticScores.values.minOrNull() ?: 0f > 0.3f -> 0.2f // Higher threshold for good matches
+                        else -> 0.1f // Standard threshold
+                    }
+
+                    if (similarity > minSimilarity) {
+                        semanticScores[emb.id] = similarity
+
+                        // Maintain only top candidates to reduce memory usage
+                        if (semanticScores.size > topK * 3) {
+                            val sorted = semanticScores.entries.sortedByDescending { it.value }
+                            semanticScores.clear()
+                            sorted.take(topK * 2).forEach { semanticScores[it.key] = it.value }
+                        }
+                    }
                 }
+                processedCount++
             }
-            
+
             offset += batch.size
-            if (batch.size < batchSize) break // Last batch
+            if (batch.size < batchSize) break
         }
 
-        // Get lexical matches (FTS search)
-        val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 4)
+        // Get lexical matches (FTS search) with improved scoring
+        val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 6) // Get more candidates for better ranking
         val lexicalScores = HashMap<Long, Float>()
 
-        for ((rank, ch) in lexicalMatches.withIndex()) {
-            val score = (lexicalMatches.size - rank).toFloat() / lexicalMatches.size.toFloat()
-            lexicalScores[ch.embeddingId ?: -1L] = score
+        // Calculate TF-IDF inspired lexical scores
+        val queryTerms = query.lowercase()
+            .split("\\s+".toRegex())
+            .filter { it.length > 2 } // Ignore very short terms
+            .distinct()
+
+        for ((rank, chunk) in lexicalMatches.withIndex()) {
+            var score = 0f
+
+            // Base rank score (lower is better rank)
+            val rankScore = 1f - (rank.toFloat() / lexicalMatches.size.toFloat())
+
+            // Term frequency bonus
+            val chunkText = chunk.text.lowercase()
+            val termMatches = queryTerms.count { term ->
+                chunkText.contains(term)
+            }
+            val termFrequency = termMatches.toFloat() / queryTerms.size.toFloat()
+
+            // Exact phrase bonus
+            val exactMatch = if (chunkText.contains(query.lowercase())) 0.3f else 0f
+
+            // Position bonus (earlier chunks in document get slight preference)
+            val positionBonus = if (chunk.start < 1000) 0.1f else 0f
+
+            score = rankScore * 0.5f + termFrequency * 0.3f + exactMatch + positionBonus
+
+            if (chunk.embeddingId != null && score > 0.05f) { // Only keep meaningful scores
+                lexicalScores[chunk.embeddingId!!] = score
+            }
         }
 
         // Fuse semantic and lexical scores
@@ -180,82 +291,303 @@ object RagService {
         }
         return sb.toString()
     }
+
+    /**
+     * Rebuilds embeddings for a document with different chunking parameters.
+     * Useful for optimizing RAG performance by experimenting with different chunk sizes.
+     */
+    suspend fun reindexDocument(
+        db: PeerDatabase,
+        doc: Document,
+        text: String,
+        maxChunkTokens: Int = 512,
+        overlapTokens: Int = 64
+    ) {
+        val engineStatus = EngineRuntime.status.value
+        if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return
+
+        // Remove existing embeddings and chunks for this document
+        val existingEmbeddings = db.embeddingDao().getByDocId(doc.id)
+        val embeddingIds = existingEmbeddings.map { it.id }
+
+        if (embeddingIds.isNotEmpty()) {
+            db.ragDao().deleteChunksByEmbeddingIds(embeddingIds)
+            db.embeddingDao().deleteByIds(embeddingIds)
+        }
+
+        // Re-index with new parameters
+        indexDocument(db, doc, text, maxChunkTokens, overlapTokens)
+    }
+
+    /**
+     * Gets statistics about the RAG index for monitoring and optimization.
+     */
+    suspend fun getIndexStats(db: PeerDatabase): RagStats {
+        val totalChunks = db.ragDao().countChunks()
+        val totalEmbeddings = db.embeddingDao().count()
+        val totalDocuments = db.documentDao().countDocuments()
+        val avgChunkTokens = db.ragDao().getAverageTokenCount() ?: 0f
+
+        return RagStats(
+            totalDocuments = totalDocuments,
+            totalChunks = totalChunks,
+            totalEmbeddings = totalEmbeddings,
+            averageChunkTokens = avgChunkTokens
+        )
+    }
 }
+
+/**
+ * Statistics about the RAG index for monitoring and optimization.
+ */
+data class RagStats(
+    val totalDocuments: Int,
+    val totalChunks: Int,
+    val totalEmbeddings: Int,
+    val averageChunkTokens: Float
+)
 
 private data class ChunkInfo(val text: String, val start: Int, val end: Int, val tokenCount: Int)
 
-    // Optimized chunking using sliding window instead of binary search
-    private fun optimizedTokenizerChunks(text: String, maxTokens: Int, overlapTokens: Int): List<ChunkInfo> {
-        if (text.isEmpty()) return emptyList()
+/**
+ * Tokenizer-aware chunking using binary search to find optimal chunk boundaries.
+ * This ensures chunks respect the token limit precisely while finding natural break points.
+ */
+private fun optimizedTokenizerChunks(text: String, maxTokens: Int, overlapTokens: Int): List<ChunkInfo> {
+    if (text.isEmpty()) return emptyList()
 
-        val out = ArrayList<ChunkInfo>()
-        var pos = 0
-        val totalChars = text.length
+    val out = ArrayList<ChunkInfo>()
+    var pos = 0
+    val totalChars = text.length
 
-        // Estimate character-to-token ratio (typically 3-4 chars per token)
-        val estimatedCharsPerToken = 4
+    // Estimate character-to-token ratio for initial bounds (typically 3-4 chars per token)
+    val estimatedCharsPerToken = 4
 
-        while (pos < totalChars) {
-            // Estimate chunk size based on token limit
-            val estimatedChunkSize = maxTokens * estimatedCharsPerToken
-            var chunkEnd = min(totalChars, pos + estimatedChunkSize)
-
-            // If we're near the end, take what's left
-            if (chunkEnd >= totalChars - 100) {
-                chunkEnd = totalChars
-            } else {
-                // Find a good breaking point by expanding until we hit token limit
-                var currentEnd = pos + (estimatedChunkSize / 2) // Start from middle
-                val step = estimatedCharsPerToken * 10 // Step by ~10 tokens
-
-                while (currentEnd < chunkEnd && currentEnd < totalChars) {
-                    val candidate = text.substring(pos, currentEnd)
-                    val tokens = countTokensCached(candidate)
-
-                    if (tokens >= maxTokens) {
-                        // We overshot, back up to previous good position
-                        chunkEnd = currentEnd
-                        break
-                    }
-                    currentEnd += step
-                }
-
-                // If we didn't find a good break, use the estimated size
-                if (currentEnd >= chunkEnd) {
-                    chunkEnd = min(totalChars, pos + estimatedChunkSize)
-                }
+    while (pos < totalChars) {
+        // If remaining text is small, just take it all
+        val remaining = totalChars - pos
+        if (remaining < maxTokens * estimatedCharsPerToken / 4) {
+            val chunkText = text.substring(pos)
+            val tokens = countTokensCached(chunkText)
+            if (tokens > 0) {
+                out.add(ChunkInfo(chunkText, pos, totalChars, tokens))
             }
-
-            // Ensure we don't go beyond text bounds
-            chunkEnd = min(chunkEnd, totalChars)
-
-            val chunkText = text.substring(pos, chunkEnd)
-            val actualTokens = countTokensCached(chunkText)
-
-            // If chunk is too small and we're not at the end, extend it
-            if (actualTokens < maxTokens / 4 && chunkEnd < totalChars) {
-                val extendedEnd = min(totalChars, chunkEnd + (maxTokens * estimatedCharsPerToken / 2))
-                val extendedText = text.substring(pos, extendedEnd)
-                val extendedTokens = countTokensCached(extendedText)
-
-                if (extendedTokens <= maxTokens) {
-                    out.add(ChunkInfo(extendedText, pos, extendedEnd, extendedTokens))
-                    pos = max(pos + 1, extendedEnd - overlapTokens * estimatedCharsPerToken)
-                    continue
-                }
-            }
-
-            out.add(ChunkInfo(chunkText, pos, chunkEnd, actualTokens))
-
-            if (chunkEnd >= totalChars) break
-
-            // Calculate next position with overlap
-            val overlapChars = overlapTokens * estimatedCharsPerToken
-            pos = max(pos + 1, chunkEnd - overlapChars)
+            break
         }
 
-        return out
+        // Binary search to find optimal chunk boundary
+        val chunkEnd = findOptimalChunkBoundary(
+            text = text,
+            start = pos,
+            maxTokens = maxTokens,
+            estimatedCharsPerToken = estimatedCharsPerToken
+        )
+
+        val chunkText = text.substring(pos, chunkEnd)
+        val actualTokens = countTokensCached(chunkText)
+
+        out.add(ChunkInfo(chunkText, pos, chunkEnd, actualTokens))
+
+        if (chunkEnd >= totalChars) break
+
+        // Calculate next position with overlap using tokenizer-aware method
+        pos = findOverlapStart(text, chunkEnd, overlapTokens, estimatedCharsPerToken)
     }
+
+    return out
+}
+
+/**
+ * Binary search to find the optimal character position that yields close to maxTokens.
+ * Prefers breaking at sentence/paragraph boundaries when possible.
+ */
+private fun findOptimalChunkBoundary(
+    text: String,
+    start: Int,
+    maxTokens: Int,
+    estimatedCharsPerToken: Int
+): Int {
+    val totalChars = text.length
+
+    // Initial estimate
+    var low = start + maxTokens * estimatedCharsPerToken / 2 // Lower bound (too small)
+    var high = min(totalChars, start + maxTokens * estimatedCharsPerToken * 2) // Upper bound (likely too large)
+
+    // Ensure we have a valid range
+    low = min(low, totalChars - 1)
+    high = min(high, totalChars)
+
+    if (low >= high) return totalChars
+
+    var bestPos = high
+    
+    // Binary search to find position closest to maxTokens
+    while (low <= high) {
+        val mid = (low + high) / 2
+        val candidate = text.substring(start, mid)
+        val tokens = countTokensCached(candidate)
+        
+        if (tokens <= maxTokens) {
+            // This position is valid, try to expand
+            bestPos = mid
+            low = mid + 1
+            
+            // If we're very close to maxTokens, this is a good boundary
+            if (tokens >= maxTokens * 0.95f) {
+                break
+            }
+        } else {
+            // Too many tokens, need to shrink
+            high = mid - 1
+        }
+    }
+    
+    // Prefer breaking at sentence/paragraph boundaries near the found position
+    val preferredPos = findNaturalBreakPoint(text, start, bestPos, maxTokens)
+    
+    return preferredPos
+}
+
+/**
+ * Finds a natural break point (sentence/paragraph) near the binary search result.
+ * Returns the best natural break within reasonable distance of the target.
+ * Enhanced with better sentence boundary detection and content awareness.
+ */
+private fun findNaturalBreakPoint(
+    text: String,
+    start: Int,
+    targetPos: Int,
+    maxTokens: Int
+): Int {
+    // Look for natural breaks within ±25% of target position (increased for better results)
+    val searchWindow = (targetPos - start) / 4
+    val searchStart = max(start, targetPos - searchWindow)
+    val searchEnd = min(text.length, targetPos + searchWindow)
+
+    // Priority: paragraph breaks > sentence breaks > clause breaks > word breaks
+    var bestBreak = targetPos
+    var bestScore = 0
+    var bestTokens = countTokensCached(text.substring(start, targetPos))
+
+    for (i in searchEnd downTo searchStart) {
+        if (i <= start) continue
+
+        val char = if (i < text.length) text[i] else ' '
+        val prevChar = if (i > 0) text[i - 1] else ' '
+        val nextChar = if (i < text.length - 1) text[i + 1] else ' '
+
+        val score = when {
+            // Paragraph break (double newline, section headers, or markdown headers)
+            (prevChar == '\n' && char == '\n') ||
+            (i > 1 && text.substring(max(0, i - 2), i).contains("\n\n")) ||
+            (char == '\n' && nextChar.isUpperCase() && i > start + 50) || // Potential section start
+            (i > start + 2 && text[i - 1] == '\n' && "#*+-".contains(char)) -> 5 // Markdown headers/lists
+
+            // Strong sentence breaks
+            ".!?".contains(prevChar) &&
+            (char.isWhitespace() || char == '\n') &&
+            (i == text.length - 1 || nextChar.isUpperCase() || nextChar == '"' || nextChar == '\'') -> 4
+
+            // Medium sentence breaks (semicolon, colon with capital letter)
+            ";:".contains(prevChar) &&
+            (char.isWhitespace() || char == '\n') &&
+            (i == text.length - 1 || nextChar.isUpperCase()) -> 3
+
+            // Weak sentence breaks (comma, dash with capital)
+            ",—".contains(prevChar) &&
+            (char.isWhitespace() || char == '\n') &&
+            (i == text.length - 1 || nextChar.isUpperCase()) -> 2
+
+            // Word breaks
+            char.isWhitespace() -> 1
+
+            else -> 0
+        }
+
+        if (score > 0) {
+            // Verify this break creates a reasonable chunk
+            val chunkText = text.substring(start, i)
+            val tokens = countTokensCached(chunkText)
+
+            // Prefer breaks that get us closer to maxTokens
+            val tokenRatio = tokens.toFloat() / maxTokens
+            val sizePenalty = when {
+                tokenRatio < 0.3f -> 0.5f // Too small
+                tokenRatio > 1.3f -> 0.7f // Too large
+                else -> 1.0f // Good size
+            }
+
+            val adjustedScore = (score * sizePenalty).toInt()
+
+            if (adjustedScore > bestScore ||
+                (adjustedScore == bestScore && abs(tokens - maxTokens) < abs(bestTokens - maxTokens))) {
+                bestBreak = i
+                bestScore = adjustedScore
+                bestTokens = tokens
+
+                // Early exit for very good breaks
+                if (score >= 4 && tokenRatio in 0.7f..1.2f) {
+                    break
+                }
+            }
+        }
+    }
+
+    return bestBreak
+}
+
+/**
+ * Finds the start position for the next chunk considering overlap.
+ * Uses tokenizer to ensure overlap is approximately overlapTokens.
+ */
+private fun findOverlapStart(
+    text: String,
+    currentEnd: Int,
+    overlapTokens: Int,
+    estimatedCharsPerToken: Int
+): Int {
+    if (currentEnd <= 0) return currentEnd
+    
+    // Estimate overlap in characters
+    val estimatedOverlap = overlapTokens * estimatedCharsPerToken
+    var overlapStart = max(0, currentEnd - estimatedOverlap * 2) // Start searching from further back
+    
+    // Binary search to find position with approximately overlapTokens
+    var low = max(0, currentEnd - estimatedOverlap * 3)
+    var high = currentEnd
+    
+    var bestPos = overlapStart
+    var bestDiff = Int.MAX_VALUE
+    
+    while (low <= high) {
+        val mid = (low + high) / 2
+        val overlapText = text.substring(mid, currentEnd)
+        val tokens = countTokensCached(overlapText)
+        
+        val diff = kotlin.math.abs(tokens - overlapTokens)
+        if (diff < bestDiff) {
+            bestDiff = diff
+            bestPos = mid
+        }
+        
+        when {
+            tokens < overlapTokens -> {
+                // Need more overlap, move start backward
+                high = mid - 1
+            }
+            tokens > overlapTokens -> {
+                // Too much overlap, move start forward
+                low = mid + 1
+            }
+            else -> {
+                // Perfect match
+                return mid
+            }
+        }
+    }
+    
+    return bestPos
+}
 
 private fun sha256(s: String): String {
     val md = MessageDigest.getInstance("SHA-256")

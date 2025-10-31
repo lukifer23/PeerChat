@@ -167,7 +167,27 @@ class HomeViewModel @Inject constructor(
     private fun observeEngine() {
         viewModelScope.launch {
             EngineRuntime.status.collect { status ->
-                updateModelState { it.copy(engineStatus = status) }
+                updateModelState {
+                    when (status) {
+                        is EngineRuntime.EngineStatus.Error -> it.copy(
+                            engineStatus = status,
+                            isOfflineMode = isNetworkError(Exception(status.message)),
+                            errorMessage = status.message
+                        )
+                        else -> it.copy(
+                            engineStatus = status,
+                            isOfflineMode = false,
+                            errorMessage = null
+                        )
+                    }
+                }
+
+                // Handle offline mode transitions
+                if (status is EngineRuntime.EngineStatus.Error && isNetworkError(Exception(status.message))) {
+                    enableOfflineMode()
+                } else if (status is EngineRuntime.EngineStatus.Loaded) {
+                    disableOfflineMode()
+                }
             }
         }
         viewModelScope.launch {
@@ -555,6 +575,16 @@ class HomeViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    private fun enableOfflineMode() {
+        updateModelState { it.copy(isOfflineMode = true) }
+        emitToast("Offline mode enabled - some features may be limited", true)
+    }
+
+    private fun disableOfflineMode() {
+        updateModelState { it.copy(isOfflineMode = false, errorMessage = null) }
+        emitToast("Back online", false)
     }
 
     private fun parseConfigFromState(): StoredEngineConfig? {

@@ -1,8 +1,14 @@
 package com.peerchat.app.engine
 
+import android.app.ActivityManager
 import android.app.Application
 import android.content.Context
+import android.content.Context.BATTERY_SERVICE
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.BatteryManager
+import android.os.PowerManager
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.util.Logger
 import com.peerchat.data.db.ModelManifest
@@ -47,11 +53,130 @@ class ModelRepository(
     val cacheStats: StateFlow<CacheStats> = _cacheStats
     private data class CacheEntry(val file: File, var size: Long)
 
+    // --------------------- Model validation ---------------------
+
+    /**
+     * Validates a model file before attempting to load it.
+     * Performs basic sanity checks on file integrity and format.
+     */
+    suspend fun validateModel(path: String): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
+        return@withContext try {
+            val file = File(path)
+            if (!file.exists()) {
+                return@withContext OperationResult.Failure("Model file does not exist: $path")
+            }
+
+            if (!file.canRead()) {
+                return@withContext OperationResult.Failure("Model file is not readable: $path")
+            }
+
+            // Check minimum file size (GGUF files are typically > 1MB)
+            val minSize = 1024 * 1024 // 1MB
+            if (file.length() < minSize) {
+                return@withContext OperationResult.Failure("Model file too small (${file.length()} bytes), expected at least $minSize bytes")
+            }
+
+            // Check maximum file size (prevent loading extremely large files)
+            val maxSize = 50L * 1024 * 1024 * 1024 // 50GB
+            if (file.length() > maxSize) {
+                return@withContext OperationResult.Failure("Model file too large (${file.length()} bytes), maximum allowed is $maxSize bytes")
+            }
+
+            // Try to get manifest to validate metadata
+            val manifest = manifestService.list().firstOrNull { it.filePath == path }
+                ?: return@withContext OperationResult.Failure("Model manifest not found. Try importing the model first.")
+
+            OperationResult.Success(manifest)
+        } catch (e: Exception) {
+            OperationResult.Failure("Model validation failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Preloads a model in the background for faster switching.
+     * This validates the model and prepares it for loading without actually loading it.
+     */
+    suspend fun preloadModel(manifest: ModelManifest): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        return@withContext try {
+            // Just validate - actual preloading would require engine changes
+            val validationResult = validateModel(manifest.filePath)
+            when (validationResult) {
+                is OperationResult.Success -> OperationResult.Success(Unit)
+                is OperationResult.Failure -> OperationResult.Failure(validationResult.error)
+            }
+        } catch (e: Exception) {
+            OperationResult.Failure("Model preload failed: ${e.message}")
+        }
+    }
+
+    // --------------------- Performance monitoring ---------------------
+
+    /**
+     * Check if device has sufficient memory for model operations
+     */
+    private fun hasSufficientMemory(context: Context, requiredMemoryMB: Int = 512): Boolean {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memoryInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memoryInfo)
+
+        val availableMemoryMB = memoryInfo.availMem / (1024 * 1024)
+        return availableMemoryMB >= requiredMemoryMB
+    }
+
+    /**
+     * Check battery status for power-intensive operations
+     */
+    private fun isBatteryOk(context: Context): Boolean {
+        val batteryManager = context.getSystemService(BATTERY_SERVICE) as BatteryManager
+        val batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+
+        // Require at least 20% battery for model operations
+        return batteryLevel >= 20
+    }
+
+    /**
+     * Check if device is plugged in (for intensive operations)
+     */
+    private fun isPluggedIn(context: Context): Boolean {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1) ?: 0
+        return plugged == BatteryManager.BATTERY_PLUGGED_AC ||
+               plugged == BatteryManager.BATTERY_PLUGGED_USB ||
+               plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS
+    }
+
+    /**
+     * Get performance recommendations based on device state
+     */
+    fun getPerformanceRecommendations(context: Context): List<String> {
+        val recommendations = mutableListOf<String>()
+
+        if (!hasSufficientMemory(context)) {
+            recommendations.add("Low memory detected - consider closing other apps")
+        }
+
+        if (!isBatteryOk(context)) {
+            recommendations.add("Low battery - connect charger for best performance")
+        }
+
+        if (!isPluggedIn(context)) {
+            recommendations.add("Device not plugged in - performance may be limited")
+        }
+
+        return recommendations
+    }
+
     // --------------------- Model lifecycle ---------------------
     suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         return@withContext try {
+            // Validate model before attempting to load
+            val validationResult = validateModel(config.modelPath)
+            if (validationResult is OperationResult.Failure) {
+                return@withContext OperationResult.Failure(validationResult.error)
+            }
+
             unloadInternal()
-            
+
             // Track load time
             val loadStartTime = System.currentTimeMillis()
             
@@ -84,7 +209,7 @@ class ModelRepository(
                     // Get metadata from engine (should be ready from parallel detection)
                     val modelMeta = EngineRuntime.currentModelMeta()
                     // Ensure manifest in background to not block
-                    kotlinx.coroutines.launch(Dispatchers.IO) {
+                    withContext(Dispatchers.IO) {
                         manifestService.ensureManifestFor(
                             path = config.modelPath,
                             modelMetaJson = modelMeta,

@@ -40,8 +40,8 @@ android {
             // Build optimization flags
             buildConfigField "boolean", "BUILD_OPTIMIZED", "true"
             // APK size optimizations
-            isDebuggable = false
-            isJniDebuggable = false
+            debuggable false
+            jniDebuggable false
             // Enable split APKs for different ABIs (though we only target arm64-v8a)
             ndk {
                 debugSymbolLevel = "NONE"

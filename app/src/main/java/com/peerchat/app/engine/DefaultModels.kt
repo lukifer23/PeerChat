@@ -7,6 +7,7 @@ data class DefaultModel(
     val cardUrl: String,
     val downloadUrl: String,
     val suggestedFileName: String,
+    val sha256: String? = null, // Optional SHA-256 for verification
     val isDefault: Boolean = true,
 )
 

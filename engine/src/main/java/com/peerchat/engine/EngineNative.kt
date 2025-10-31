@@ -60,4 +60,10 @@ object EngineNative {
     external fun stateCaptureInto(buffer: java.nio.ByteBuffer): Int
 
     external fun stateRestoreFrom(buffer: java.nio.ByteBuffer, length: Int): Boolean
+
+    /**
+     * Request abort of current generation operation.
+     * Thread-safe and can be called from any thread.
+     */
+    external fun abort()
 }

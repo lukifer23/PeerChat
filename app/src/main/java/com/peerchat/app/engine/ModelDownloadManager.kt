@@ -21,6 +21,7 @@ object ModelDownloadManager {
                     ModelDownloadWorker.KEY_URL to model.downloadUrl,
                     ModelDownloadWorker.KEY_FILE_NAME to model.suggestedFileName,
                     ModelDownloadWorker.KEY_IS_DEFAULT to model.isDefault,
+                    ModelDownloadWorker.KEY_SHA256 to (model.sha256 ?: ""),
                 )
             )
             .build()

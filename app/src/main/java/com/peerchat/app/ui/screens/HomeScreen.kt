@@ -40,7 +40,6 @@ fun HomeScreen(
     homeViewModel: HomeViewModel = hiltViewModel(),
     chatViewModel: ChatViewModel = hiltViewModel()
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val uiState by homeViewModel.uiState.collectAsState()
     val chatUiState by chatViewModel.uiState.collectAsState()
@@ -113,34 +112,34 @@ fun HomeScreen(
     when (dialogState) {
         is DialogState.None -> Unit // No dialog
         is DialogState.RenameChat -> {
-            val renameState = dialogState
+            val state = dialogState as DialogState.RenameChat
             RenameChatDialog(
-                currentTitle = renameState.currentTitle,
+                currentTitle = state.currentTitle,
                 onConfirm = { title ->
-                    chatViewModel.renameChat(renameState.chatId, title)
+                    chatViewModel.renameChat(state.chatId, title)
                     homeViewModel.dismissDialog()
                 },
                 onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.MoveChat -> {
-            val moveState = dialogState
+            val state = dialogState as DialogState.MoveChat
             MoveChatDialog(
                 folders = uiState.navigation.folders,
                 onMoveToFolder = { folderId ->
-                    chatViewModel.moveChat(moveState.chatId, folderId)
+                    chatViewModel.moveChat(state.chatId, folderId)
                     homeViewModel.dismissDialog()
                 },
                 onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.ForkChat -> {
-            val forkState = dialogState
+            val state = dialogState as DialogState.ForkChat
             ForkChatDialog(
                 onConfirm = {
                     // Fork is async, handle in coroutine
                     scope.launch {
-                        chatViewModel.forkChat(forkState.chatId)
+                        chatViewModel.forkChat(state.chatId)
                         homeViewModel.dismissDialog()
                     }
                 },
@@ -157,22 +156,22 @@ fun HomeScreen(
             )
         }
         is DialogState.RenameFolder -> {
-            val renameFolderState = dialogState
+            val state = dialogState as DialogState.RenameFolder
             RenameFolderDialog(
-                currentName = renameFolderState.currentName,
+                currentName = state.currentName,
                 onConfirm = { name ->
-                    homeViewModel.renameFolder(renameFolderState.folderId, name)
+                    homeViewModel.renameFolder(state.folderId, name)
                     homeViewModel.dismissDialog()
                 },
                 onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.DeleteFolder -> {
-            val deleteFolderState = dialogState
+            val state = dialogState as DialogState.DeleteFolder
             DeleteFolderDialog(
-                folderName = deleteFolderState.folderName,
+                folderName = state.folderName,
                 onConfirm = {
-                    homeViewModel.deleteFolder(deleteFolderState.folderId)
+                    homeViewModel.deleteFolder(state.folderId)
                     homeViewModel.dismissDialog()
                 },
                 onDismiss = homeViewModel::dismissDialog
@@ -191,11 +190,11 @@ fun HomeScreen(
             )
         }
         is DialogState.DeleteChat -> {
-            val deleteChatState = dialogState
+            val state = dialogState as DialogState.DeleteChat
             DeleteChatDialog(
-                chatTitle = deleteChatState.chatTitle,
+                chatTitle = state.chatTitle,
                 onConfirm = {
-                    chatViewModel.deleteChat(deleteChatState.chatId)
+                    chatViewModel.deleteChat(state.chatId)
                     homeViewModel.dismissDialog()
                 },
                 onDismiss = homeViewModel::dismissDialog

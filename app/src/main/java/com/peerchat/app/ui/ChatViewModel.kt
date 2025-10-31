@@ -11,6 +11,8 @@ import com.peerchat.app.ui.components.GlobalToastManager
 import com.peerchat.app.util.optFloatOrNull
 import com.peerchat.app.util.optIntOrNull
 import com.peerchat.app.util.optStringOrNull
+import com.peerchat.app.util.measureDuration
+import com.peerchat.app.util.InputSanitizer
 import com.peerchat.app.ui.stream.ReasoningParser
 import com.peerchat.data.db.Message
 import com.peerchat.engine.EngineMetrics
@@ -25,10 +27,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -88,9 +93,11 @@ class ChatViewModel @Inject constructor(
 
     private fun observeMessages() {
         viewModelScope.launch {
+            // Only react to chatId changes, not every state update
             _uiState
-                .collectLatest { state ->
-                    val chatId = state.activeChatId
+                .map { it.activeChatId }
+                .distinctUntilChanged()
+                .collectLatest { chatId ->
                     if (chatId != null) {
                         val messages = withContext(Dispatchers.IO) {
                             repository.listMessages(chatId)
@@ -341,161 +348,166 @@ class ChatViewModel @Inject constructor(
 
     fun sendPrompt(prompt: String) {
         val chatId = _uiState.value.activeChatId ?: return
-        val trimmed = prompt.trim()
-        if (trimmed.isEmpty()) return
 
-        launchCancellable {
-            updateStreamingState { StreamingUiState(isStreaming = true) }
+        // Sanitize user input for security
+        val sanitizedPrompt = try {
+            InputSanitizer.sanitizeChatInput(prompt)
+        } catch (e: SecurityException) {
+            emitToast("Input validation failed: ${e.message}", true)
+            return
+        }
 
-            try {
-                val stateSnapshot = _uiState.value
-                val history = runCatching {
-                    withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        repository.listMessages(chatId)
-                    }
-                }.getOrDefault(emptyList())
+        if (sanitizedPrompt.isEmpty()) {
+            emitToast("Input contains invalid content", true)
+            return
+        }
 
-                // Save user message and start RAG retrieval in parallel
-                val userMessageDeferred = async(Dispatchers.IO) {
-                    repository.insertMessage(
-                        Message(
-                            chatId = chatId,
-                            role = "user",
-                            contentMarkdown = prompt,
-                            tokens = 0,
-                            ttfsMs = 0,
-                            tps = 0f,
-                            contextUsedPct = 0f,
-                            createdAt = System.currentTimeMillis(),
-                            metaJson = "{}"
-                        )
-                    )
-                }
-
-                // RAG retrieval in background (non-blocking)
-                val ragDeferred = async(Dispatchers.IO) {
-                    runCatching {
-                        retriever.retrieve(repository.database(), prompt, topK = 6)
-                    }.getOrDefault(emptyList())
-                }
-
-                // Wait for user message save to complete
-                runCatching {
-                    userMessageDeferred.await()
-                }.onFailure { e ->
-                    emitToast("Failed to save message: ${e.message}", true)
-                    updateStreamingState { StreamingUiState() }
-                    return@launchCancellable
-                }
-
-                // Get RAG results (should be ready by now)
-                val retrieved = ragDeferred.await()
-                val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
-                val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
-
-                val composition = runCatching {
-                    promptComposer.compose(
-                        PromptComposer.Inputs(
-                            systemPrompt = stateSnapshot.sysPrompt.takeIf { it.isNotBlank() },
-                            history = history,
-                            nextUserContent = augmented,
-                            selectedTemplateId = stateSnapshot.selectedTemplateId,
-                            detectedTemplateId = stateSnapshot.detectedTemplateId
-                        )
-                    )
-                }.getOrNull()
-
-                if (composition == null) {
-                    emitToast("Failed to compose prompt", true)
-                    updateStreamingState { StreamingUiState() }
-                    return@launchCancellable
-                }
-
-                val parser = ReasoningParser(onVisibleToken = {})
-
-                runCatching {
-                    modelRepository.streamWithCache(
-                        chatId = chatId,
-                        prompt = composition.prompt.text,
-                        systemPrompt = null,
-                        template = composition.template.id,
-                        temperature = stateSnapshot.temperature,
-                        topP = stateSnapshot.topP,
-                        topK = stateSnapshot.topK,
-                        maxTokens = stateSnapshot.maxTokens,
-                        stop = composition.prompt.stopSequences.toTypedArray()
-                    ).collect { event ->
-                        when (event) {
-                            is EngineStreamEvent.Token -> {
-                                parser.handle(event.text)
-                                val snapshot = parser.snapshot()
-                                updateStreamingState {
-                                    it.copy(
-                                        isStreaming = true,
-                                        visibleText = snapshot.visible,
-                                        reasoningText = snapshot.reasoning,
-                                        reasoningChars = snapshot.reasoningChars,
-                                        reasoningDurationMs = null,
-                                        metrics = null
-                                    )
-                                }
-                            }
-
-                            is EngineStreamEvent.Terminal -> {
-                                val parseResult = parser.result()
-                                val finalText = parseResult.visible
-                                val reasoningText = parseResult.reasoning
-
-                                // Save assistant message on background thread
-                                withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        repository.insertMessage(
-                                            Message(
-                                                chatId = chatId,
-                                                role = "assistant",
-                                                contentMarkdown = finalText,
-                                                tokens = event.metrics.generationTokens,
-                                                ttfsMs = event.metrics.ttfsMs.toLong(),
-                                                tps = event.metrics.tps.toFloat(),
-                                                contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
-                                                createdAt = System.currentTimeMillis(),
-                                                metaJson = buildAssistantMeta(
-                                                    templateId = composition.template.id,
-                                                    metrics = event.metrics,
-                                                    reasoning = reasoningText.takeIf { it.isNotBlank() },
-                                                    reasoningDurationMs = parseResult.reasoningDurationMs,
-                                                    reasoningChars = parseResult.reasoningChars
-                                                )
-                                            )
-                                        )
-                                    }.onFailure { e ->
-                                        emitToast("Failed to save response: ${e.message}", true)
-                                    }
-                                }
-
-                                updateStreamingState {
-                                    it.copy(
-                                        isStreaming = false,
-                                        visibleText = "",
-                                        reasoningText = "",
-                                        reasoningChars = 0,
-                                        reasoningDurationMs = parseResult.reasoningDurationMs,
-                                        metrics = event.metrics
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }.onFailure { e ->
-                    emitToast("Generation failed: ${e.message}", true)
-                    runCatching { modelRepository.clearKv(chatId) }
-                    updateStreamingState { StreamingUiState() }
-                }
-            } catch (e: Exception) {
-                emitToast("Unexpected error: ${e.message}", true)
-                runCatching { modelRepository.clearKv(chatId) }
+        executeWithRetry(
+            operation = {
+                performSendPrompt(chatId, sanitizedPrompt)
+            },
+            maxRetries = 2, // Allow one retry for transient failures
+            baseDelayMs = 2000,
+            onRetry = { attempt, error ->
+                emitToast("Retry $attempt/2: $error", true)
+            },
+            onSuccess = { /* Success handled in performSendPrompt */ },
+            onFailure = { error ->
+                emitToast("Failed to send message: $error", true)
                 updateStreamingState { StreamingUiState() }
             }
+        )
+    }
+
+    private suspend fun performSendPrompt(chatId: Long, prompt: String): OperationResult<Unit> = coroutineScope {
+        try {
+            updateStreamingState { StreamingUiState(isStreaming = true) }
+
+            val stateSnapshot = _uiState.value
+            val history = runCatching {
+                repository.listMessages(chatId)
+            }.getOrDefault(emptyList())
+
+            // Save user message and start RAG retrieval in parallel
+            val userMessageDeferred = async(Dispatchers.IO) {
+                repository.insertMessage(
+                    Message(
+                        chatId = chatId,
+                        role = "user",
+                        contentMarkdown = prompt,
+                        tokens = 0,
+                        ttfsMs = 0,
+                        tps = 0f,
+                        contextUsedPct = 0f,
+                        createdAt = System.currentTimeMillis(),
+                        metaJson = "{}"
+                    )
+                )
+            }
+
+            // RAG retrieval in background (non-blocking)
+            val ragDeferred = async(Dispatchers.IO) {
+                runCatching {
+                    retriever.retrieve(repository.database(), prompt, topK = 6)
+                }.getOrDefault(emptyList())
+            }
+
+            // Wait for user message save to complete
+            userMessageDeferred.await()
+
+            // Get RAG results (should be ready by now)
+            val retrieved = ragDeferred.await()
+            val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
+            val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
+
+            val composition = promptComposer.compose(
+                PromptComposer.Inputs(
+                    systemPrompt = stateSnapshot.sysPrompt.takeIf { it.isNotBlank() },
+                    history = history,
+                    nextUserContent = augmented,
+                    selectedTemplateId = stateSnapshot.selectedTemplateId,
+                    detectedTemplateId = stateSnapshot.detectedTemplateId
+                )
+            )
+
+            val parser = ReasoningParser(onVisibleToken = {})
+
+            modelRepository.streamWithCache(
+                chatId = chatId,
+                prompt = composition.prompt.text,
+                systemPrompt = null,
+                template = composition.template.id,
+                temperature = stateSnapshot.temperature,
+                topP = stateSnapshot.topP,
+                topK = stateSnapshot.topK,
+                maxTokens = stateSnapshot.maxTokens,
+                stop = composition.prompt.stopSequences.toTypedArray()
+            ).collect { event ->
+                when (event) {
+                    is EngineStreamEvent.Token -> {
+                        parser.handle(event.text)
+                        val snapshot = parser.snapshot()
+                        updateStreamingState {
+                            it.copy(
+                                isStreaming = true,
+                                visibleText = snapshot.visible,
+                                reasoningText = snapshot.reasoning,
+                                reasoningChars = snapshot.reasoningChars,
+                                reasoningDurationMs = null,
+                                metrics = null
+                            )
+                        }
+                    }
+
+                    is EngineStreamEvent.Terminal -> {
+                        val parseResult = parser.result()
+                        val finalText = parseResult.visible
+                        val reasoningText = parseResult.reasoning
+
+                        // Save assistant message on background thread
+                        withContext(Dispatchers.IO) {
+                            repository.insertMessage(
+                                Message(
+                                    chatId = chatId,
+                                    role = "assistant",
+                                    contentMarkdown = finalText,
+                                    tokens = event.metrics.generationTokens,
+                                    ttfsMs = event.metrics.ttfsMs.toLong(),
+                                    tps = event.metrics.tps.toFloat(),
+                                    contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
+                                    createdAt = System.currentTimeMillis(),
+                                    metaJson = buildAssistantMeta(
+                                        templateId = composition.template.id,
+                                        metrics = event.metrics,
+                                        reasoning = reasoningText.takeIf { it.isNotBlank() },
+                                        reasoningDurationMs = parseResult.reasoningDurationMs,
+                                        reasoningChars = parseResult.reasoningChars
+                                    )
+                                )
+                            )
+                        }
+
+                        updateStreamingState {
+                            it.copy(
+                                isStreaming = false,
+                                visibleText = "",
+                                reasoningText = "",
+                                reasoningChars = 0,
+                                reasoningDurationMs = parseResult.reasoningDurationMs,
+                                metrics = event.metrics
+                            )
+                        }
+                    }
+                }
+            }
+
+            OperationResult.Success(Unit)
+        } catch (e: Exception) {
+            // Clean up on error
+            runCatching { modelRepository.clearKv(chatId) }
+            updateStreamingState { StreamingUiState() }
+
+            OperationResult.Failure("Message generation failed: ${e.message ?: "Unknown error"}")
         }
     }
 
@@ -524,5 +536,4 @@ class ChatViewModel @Inject constructor(
             reasoning?.let { put("reasoning", it) }
         }.toString()
     }
-
 }

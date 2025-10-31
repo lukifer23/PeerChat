@@ -165,9 +165,14 @@ void reset_metrics_locked() {
     g_state.metrics = EngineMetrics{};
     g_state.stop_reason = StopReason::None;
     g_state.stop_sequence.clear();
+    g_state.should_abort.store(false, std::memory_order_relaxed);
 }
 
 void unload_locked() {
+    // Clear abort flag before cleanup
+    g_state.should_abort.store(false, std::memory_order_relaxed);
+    
+    // Clean up context
     if (g_state.ctx) {
         llama_free(g_state.ctx);
         g_state.ctx = nullptr;
@@ -177,6 +182,12 @@ void unload_locked() {
         g_state.model = nullptr;
     }
     reset_metrics_locked();
+}
+
+// Abort callback function for llama context
+bool abort_callback_handler(void * data) {
+    (void) data;
+    return g_state.should_abort.load(std::memory_order_relaxed);
 }
 
 std::string stop_reason_to_string(StopReason reason) {
@@ -344,6 +355,13 @@ bool generate_internal(const GenerationRequest & req,
     }
 
     ensure_backend_init();
+    
+    // Reset abort flag for new generation
+    g_state.should_abort.store(false, std::memory_order_relaxed);
+    
+    // Set abort callback for graceful cancellation during generation
+    llama_set_abort_callback(g_state.ctx, abort_callback_handler, nullptr);
+    
     llama_memory_clear(llama_get_memory(g_state.ctx), true);
     llama_set_n_threads(g_state.ctx, g_state.n_threads, g_state.n_threads);
 
@@ -408,6 +426,13 @@ bool generate_internal(const GenerationRequest & req,
     const double t_decode_start_ms = llama_time_us() / 1000.0;
 
     for (int i = 0; i < req.max_tokens; ++i) {
+        // Check abort flag before each token generation
+        if (g_state.should_abort.load(std::memory_order_relaxed)) {
+            summary.reason = StopReason::Error;
+            summary.metrics.truncated = true;
+            break;
+        }
+        
         const llama_token token = llama_sampler_sample(sampler, g_state.ctx, -1);
         llama_sampler_accept(sampler, token);
 
@@ -597,6 +622,20 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
     cparams.n_threads = std::max(1, nThreads);
     cparams.n_threads_batch = std::max(1, nThreads);
 
+    // Performance optimizations for Vulkan
+    if (useVulkan) {
+        // Increase batch size for better GPU utilization
+        cparams.n_batch = std::min(2048U, cparams.n_ctx / 4);
+        cparams.n_ubatch = std::min(512U, cparams.n_batch / 4);
+
+        // Optimize for GPU memory usage
+        cparams.offload_kqv = true;
+    } else {
+        // CPU optimizations
+        cparams.n_batch = std::min(512U, cparams.n_ctx / 8);
+        cparams.n_ubatch = std::min(128U, cparams.n_batch / 4);
+    }
+
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         LOGE("failed to create llama context");
@@ -720,11 +759,6 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
 
     ensure_backend_init();
 
-    if (!llama_model_has_embeddings(g_state.model)) {
-        LOGE("model does not expose embeddings");
-        return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
-    }
-
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = g_state.n_ctx;
     cparams.n_threads = g_state.n_threads;
@@ -786,6 +820,7 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         env->DeleteLocalRef(inner);
     }
 
+    // Clean up embedding context
     llama_free(ectx);
     return outer;
 }
@@ -882,6 +917,15 @@ Java_com_peerchat_engine_EngineNative_stateClear(JNIEnv * env, jobject thiz, jbo
     }
     llama_memory_clear(llama_get_memory(g_state.ctx), clearData == JNI_TRUE);
     reset_metrics_locked();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peerchat_engine_EngineNative_abort(JNIEnv * env, jobject thiz) {
+    (void) env;
+    (void) thiz;
+    // Thread-safe abort flag set
+    g_state.should_abort.store(true, std::memory_order_release);
+    LOGI("abort requested");
 }
 
 extern "C" JNIEXPORT jint JNICALL

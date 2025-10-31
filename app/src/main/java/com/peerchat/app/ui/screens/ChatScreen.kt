@@ -45,8 +45,7 @@ fun ChatScreen(
     onSend: (String) -> Unit,
 ) {
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
-    val clipboard = LocalClipboardManager.current
-    var showReasoning by remember { mutableStateOf(false) }
+    var selectedReasoningMessage by remember { mutableStateOf<Message?>(null) }
     val isStreaming = streaming.isStreaming
     val metricsState = streaming.metrics
 
@@ -67,25 +66,9 @@ fun ChatScreen(
                 MessageBubble(
                     message = msg,
                     showReasoningButton = true,
-                    onReasoningClick = { showReasoning = true },
-                    modifier = Modifier.animateItemPlacement()
+                    onReasoningClick = { selectedReasoningMessage = msg },
+                    modifier = Modifier.animateItem()
                 )
-
-                // Show reasoning dialog if requested
-                if (showReasoning && msg.role != "user") {
-                    val reasoning = remember(msg.metaJson) {
-                        runCatching { org.json.JSONObject(msg.metaJson).optString("reasoning") }
-                            .getOrNull().orEmpty()
-                    }
-                    if (reasoning.isNotBlank()) {
-                        AlertDialog(
-                            onDismissRequest = { showReasoning = false },
-                            confirmButton = { TextButton(onClick = { showReasoning = false }) { Text("Close") } },
-                            title = { Text("Reasoning") },
-                            text = { Text(reasoning) }
-                        )
-                    }
-                }
             }
             item {
                 AnimatedVisibility(
@@ -95,9 +78,9 @@ fun ChatScreen(
                 ) {
                     StreamingMessageBubble(
                         currentText = streaming.visibleText,
-                        showReasoning = showReasoning,
+                        showReasoning = selectedReasoningMessage != null,
                         reasoningText = streaming.reasoningText,
-                        onShowReasoningChange = { showReasoning = it }
+                        onShowReasoningChange = { if (it) selectedReasoningMessage = messages.lastOrNull { msg -> msg.role == "assistant" } else selectedReasoningMessage = null }
                     )
                 }
             }
@@ -125,10 +108,28 @@ fun ChatScreen(
                     if (!enabled) return@Button
                     val prompt = input.text
                     input = androidx.compose.ui.text.input.TextFieldValue("")
-                    showReasoning = false
+                    selectedReasoningMessage = null
                     onSend(prompt)
                 }
             ) { Text("Send") }
+        }
+
+        // Reasoning dialog - moved outside lazy list for better performance
+        selectedReasoningMessage?.let { message ->
+            if (message.role != "user") {
+                val reasoning = remember(message.metaJson) {
+                    runCatching { org.json.JSONObject(message.metaJson).optString("reasoning") }
+                        .getOrNull().orEmpty()
+                }
+                if (reasoning.isNotBlank()) {
+                    AlertDialog(
+                        onDismissRequest = { selectedReasoningMessage = null },
+                        confirmButton = { TextButton(onClick = { selectedReasoningMessage = null }) { Text("Close") } },
+                        title = { Text("Reasoning Process") },
+                        text = { Text(reasoning) }
+                    )
+                }
+            }
         }
     }
 }

@@ -1,5 +1,11 @@
 package com.peerchat.app.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +22,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.peerchat.data.db.Message
@@ -33,6 +41,7 @@ fun MessageBubble(
 ) {
     val clipboard = LocalClipboardManager.current
     val roleLabel = if (message.role == "user") "You:" else "Assistant:"
+    val messageType = if (message.role == "user") "User message" else "Assistant message"
     
     // Parse metrics from metadata
     val metrics = remember(message.metaJson, showMetrics) {
@@ -52,7 +61,13 @@ fun MessageBubble(
     }
 
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .semantics {
+                    contentDescription = "$messageType: ${message.contentMarkdown.take(100)}${if (message.contentMarkdown.length > 100) "..." else ""}"
+                }
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -63,12 +78,18 @@ fun MessageBubble(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (metrics != null) {
-                    Text(
-                        "TTFS: ${metrics.first}ms • TPS: ${String.format("%.1f", metrics.second)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                AnimatedVisibility(
+                    visible = metrics != null,
+                    enter = expandVertically(animationSpec = spring()) + fadeIn(),
+                    exit = shrinkVertically(animationSpec = spring()) + fadeOut()
+                ) {
+                    if (metrics != null) {
+                        Text(
+                            "TTFS: ${metrics.first}ms • TPS: ${String.format("%.1f", metrics.second)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
             MarkdownText(message.contentMarkdown)
@@ -85,30 +106,46 @@ fun MessageBubble(
                         }.getOrNull() ?: Triple("", 0L, 0)
                     }
                 }
-                if (reasoningData.first.isNotBlank() && onReasoningClick != null) {
-                    Row(
-                        Modifier.fillMaxWidth(), 
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-                    ) {
-                        if (reasoningData.second > 0 || reasoningData.third > 0) {
-                            Text(
-                                "${reasoningData.third} chars${if (reasoningData.second > 0) " • ${reasoningData.second}ms" else ""}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(end = 8.dp)
-                            )
+                AnimatedVisibility(
+                    visible = reasoningData.first.isNotBlank() && onReasoningClick != null,
+                    enter = expandVertically(animationSpec = spring()) + fadeIn(),
+                    exit = shrinkVertically(animationSpec = spring()) + fadeOut()
+                ) {
+                    if (reasoningData.first.isNotBlank() && onReasoningClick != null) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                        ) {
+                            if (reasoningData.second > 0 || reasoningData.third > 0) {
+                                Text(
+                                    "${reasoningData.third} chars${if (reasoningData.second > 0) " • ${reasoningData.second}ms" else ""}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(end = 8.dp)
+                                )
+                            }
+                            TextButton(
+                                onClick = onReasoningClick,
+                                modifier = Modifier.semantics {
+                                    contentDescription = "Show reasoning process (${reasoningData.third} characters, ${reasoningData.second}ms duration)"
+                                }
+                            ) { Text("Reasoning") }
                         }
-                        TextButton(onClick = onReasoningClick) { Text("Reasoning") }
                     }
                 }
             }
         }
 
         if (showCopyButton) {
-            TextButton(onClick = {
-                clipboard.setText(AnnotatedString(message.contentMarkdown))
-            }) { Text("Copy") }
+            TextButton(
+                onClick = {
+                    clipboard.setText(AnnotatedString(message.contentMarkdown))
+                },
+                modifier = Modifier.semantics {
+                    contentDescription = "Copy message to clipboard"
+                }
+            ) { Text("Copy") }
         }
     }
 }

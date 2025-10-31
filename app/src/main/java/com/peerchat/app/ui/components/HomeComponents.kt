@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
@@ -118,7 +118,7 @@ fun HomeTopBar(
                 Icon(Icons.Default.Add, contentDescription = "New Chat")
             }
             IconButton(onClick = onOpenDocuments) {
-                Icon(Icons.Default.List, contentDescription = "Documents")
+                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Documents")
             }
             IconButton(onClick = onOpenModels) {
                 Icon(Icons.Default.Build, contentDescription = "Models")

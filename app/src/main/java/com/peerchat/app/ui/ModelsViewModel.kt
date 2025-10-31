@@ -61,6 +61,19 @@ class ModelsViewModel @Inject constructor(
     fun activate(manifest: ModelManifest) {
         viewModelScope.launch {
             _uiState.update { it.copy(activatingId = manifest.id) }
+
+            // First validate the model
+            when (val validationResult = modelRepository.validateModel(manifest.filePath)) {
+                is com.peerchat.app.data.OperationResult.Failure -> {
+                    emitToast("Model validation failed: ${validationResult.error}", true)
+                    _uiState.update { it.copy(activatingId = null) }
+                    return@launch
+                }
+                is com.peerchat.app.data.OperationResult.Success -> {
+                    // Validation passed, proceed with activation
+                }
+            }
+
             when (val result = modelRepository.activateManifest(manifest)) {
                 is com.peerchat.app.data.OperationResult.Success -> {
                     val loaded = result.data

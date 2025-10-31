@@ -53,17 +53,40 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(message: Message): Long
 
+    @androidx.room.Transaction
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(messages: List<Message>): List<Long>
+
     @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY id ASC")
     fun observeByChat(chatId: Long): Flow<List<Message>>
 
     @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY id ASC")
     suspend fun listByChat(chatId: Long): List<Message>
 
+    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY id DESC LIMIT 1")
+    suspend fun getLastMessage(chatId: Long): Message?
+
+    @Query("SELECT COUNT(*) FROM messages WHERE chatId = :chatId")
+    suspend fun countByChat(chatId: Long): Int
+
+    @Query("SELECT SUM(tokens) FROM messages WHERE chatId = :chatId")
+    suspend fun getTotalTokens(chatId: Long): Int?
+
+    @Query("SELECT messages.* FROM messages JOIN messages_fts ON(messages_fts.contentMarkdown MATCH :query) WHERE messages.rowid = messages_fts.rowid AND messages.chatId = :chatId ORDER BY messages.id DESC LIMIT :limit")
+    suspend fun searchTextInChat(chatId: Long, query: String, limit: Int = 50): List<Message>
+
     @Query("SELECT messages.* FROM messages JOIN messages_fts ON(messages_fts.contentMarkdown MATCH :query) WHERE messages.rowid = messages_fts.rowid ORDER BY messages.id DESC LIMIT :limit")
     suspend fun searchText(query: String, limit: Int = 50): List<Message>
 
+    @androidx.room.Transaction
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     suspend fun deleteByChat(chatId: Long)
+
+    @Query("DELETE FROM messages WHERE id = :messageId")
+    suspend fun deleteById(messageId: Long)
+
+    @Query("SELECT * FROM messages WHERE id > :afterId AND chatId = :chatId ORDER BY id ASC LIMIT :limit")
+    suspend fun getMessagesAfter(chatId: Long, afterId: Long, limit: Int): List<Message>
 }
 
 @Dao
@@ -77,6 +100,9 @@ interface DocumentDao {
     @Query("DELETE FROM documents WHERE id = :id")
     suspend fun delete(id: Long)
 
+    @Query("SELECT COUNT(*) FROM documents")
+    suspend fun countDocuments(): Int
+
     @Query("SELECT * FROM documents ORDER BY createdAt DESC LIMIT :limit")
     suspend fun getRecent(limit: Int): List<Document>
 }
@@ -86,14 +112,51 @@ interface EmbeddingDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(embedding: Embedding): Long
 
-    @Query("SELECT * FROM embeddings")
-    suspend fun listAll(): List<Embedding>
+    @androidx.room.Transaction
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(embeddings: List<Embedding>): List<Long>
+
+    @Query("SELECT * FROM embeddings WHERE docId = :docId ORDER BY id ASC")
+    suspend fun getByDocId(docId: Long): List<Embedding>
+
+    @Query("SELECT * FROM embeddings WHERE chatId = :chatId ORDER BY id ASC")
+    suspend fun getByChatId(chatId: Long): List<Embedding>
+
+    @Query("SELECT * FROM embeddings WHERE textHash = :textHash LIMIT 1")
+    suspend fun getByTextHash(textHash: String): Embedding?
 
     @Query("SELECT * FROM embeddings LIMIT :limit OFFSET :offset")
     suspend fun listPaginated(limit: Int, offset: Int): List<Embedding>
 
     @Query("SELECT COUNT(*) FROM embeddings")
     suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM embeddings WHERE docId = :docId")
+    suspend fun countByDocId(docId: Long): Int
+
+    @Query("SELECT COUNT(*) FROM embeddings WHERE chatId = :chatId")
+    suspend fun countByChatId(chatId: Long): Int
+
+    @androidx.room.Transaction
+    @Query("DELETE FROM embeddings WHERE docId = :docId")
+    suspend fun deleteByDocId(docId: Long)
+
+    @androidx.room.Transaction
+    @Query("DELETE FROM embeddings WHERE chatId = :chatId")
+    suspend fun deleteByChatId(chatId: Long)
+
+    @Query("DELETE FROM embeddings WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<Long>)
+
+    @Query("DELETE FROM embeddings WHERE textHash = :textHash")
+    suspend fun deleteByTextHash(textHash: String)
+
+    // Cleanup orphaned embeddings (those without valid docId or chatId)
+    @Query("DELETE FROM embeddings WHERE docId IS NOT NULL AND docId NOT IN (SELECT id FROM documents)")
+    suspend fun deleteOrphanedByDoc(): Int
+
+    @Query("DELETE FROM embeddings WHERE chatId IS NOT NULL AND chatId NOT IN (SELECT id FROM chats)")
+    suspend fun deleteOrphanedByChat(): Int
 }
 
 @Dao
@@ -109,6 +172,15 @@ interface RagDao {
 
     @Query("SELECT * FROM rag_chunks WHERE embeddingId IN (:embeddingIds)")
     suspend fun getByEmbeddingIds(embeddingIds: List<Long>): List<RagChunk>
+
+    @Query("DELETE FROM rag_chunks WHERE embeddingId IN (:embeddingIds)")
+    suspend fun deleteChunksByEmbeddingIds(embeddingIds: List<Long>)
+
+    @Query("SELECT COUNT(*) FROM rag_chunks")
+    suspend fun countChunks(): Int
+
+    @Query("SELECT AVG(tokenCount) FROM rag_chunks")
+    suspend fun getAverageTokenCount(): Float?
 }
 
 @Dao

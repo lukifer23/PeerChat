@@ -31,7 +31,7 @@ object OcrService {
                 suspendCancellableCoroutine<OcrResult> { cont ->
                     recognizer.process(inputImage)
                         .addOnSuccessListener { visionText ->
-                            val text = visionText.text ?: ""
+                            val text = visionText.text
                             cont.resume(OcrResult.Success(text))
                         }
                         .addOnFailureListener { e ->

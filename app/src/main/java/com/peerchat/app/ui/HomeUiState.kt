@@ -36,7 +36,9 @@ data class ModelState(
     val gpuText: String = "20",
     val useVulkan: Boolean = true,
     val importingModel: Boolean = false,
-    val cacheStats: ModelRepository.CacheStats = ModelRepository.CacheStats()
+    val cacheStats: ModelRepository.CacheStats = ModelRepository.CacheStats(),
+    val isOfflineMode: Boolean = false,
+    val errorMessage: String? = null
 )
 
 data class DocumentState(
