@@ -66,4 +66,11 @@ object EngineNative {
      * Thread-safe and can be called from any thread.
      */
     external fun abort()
+
+    /**
+     * Attempt to recover engine state after crashes or errors.
+     * Clears memory, resets abort flags, and attempts to restore normal operation.
+     * Thread-safe and can be called from any thread.
+     */
+    external fun recover()
 }

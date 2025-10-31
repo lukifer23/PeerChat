@@ -160,6 +160,7 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
             onThreadChange = homeViewModel::updateThreadText,
             onContextChange = homeViewModel::updateContextText,
             onGpuChange = homeViewModel::updateGpuText,
+            onUseGpuModeChange = homeViewModel::updateUseGpuMode,
             onUseVulkanChange = homeViewModel::updateUseVulkan,
             onLoadModel = homeViewModel::loadModel,
             onUnloadModel = homeViewModel::unloadModel,

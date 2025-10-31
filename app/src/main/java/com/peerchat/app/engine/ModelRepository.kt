@@ -57,17 +57,37 @@ class ModelRepository(
     private val _cacheStats = MutableStateFlow(CacheStats())
     val cacheStats: StateFlow<CacheStats> = _cacheStats
     private data class CacheEntry(val file: File, var size: Long)
+    
+    // Validation cache (path -> (lastModified, validation result))
+    private val validationCache = mutableMapOf<String, Pair<Long, OperationResult<ModelManifest>>>()
+    private val validationCacheLock = ReentrantLock()
+    private val VALIDATION_CACHE_TTL_MS = 60_000L // 1 minute cache
 
     // --------------------- Model validation ---------------------
 
     /**
      * Validates a model file before attempting to load it.
      * Performs basic sanity checks on file integrity and format.
+     * Results are cached for 1 minute to avoid redundant file I/O.
      */
     suspend fun validateModel(path: String): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         val startNs = System.nanoTime()
         val file = File(path)
         val fileName = file.name.ifBlank { path.substringAfterLast('/', path) }
+        
+        // Check validation cache
+        val now = System.currentTimeMillis()
+        validationCacheLock.withLock {
+            val cached = validationCache[path]
+            if (cached != null && (now - cached.first) < VALIDATION_CACHE_TTL_MS) {
+                val fileModified = file.lastModified()
+                // Only use cache if file hasn't been modified
+                if (fileModified == cached.first) {
+                    Logger.d("validateModel: cache_hit", mapOf("file" to fileName))
+                    return@withContext cached.second
+                }
+            }
+        }
 
         fun failure(reason: String): OperationResult<ModelManifest> {
             Logger.e(
@@ -80,7 +100,7 @@ class ModelRepository(
             return OperationResult.Failure(reason)
         }
 
-        return@withContext try {
+        val result = try {
             if (!file.exists()) {
                 return@withContext failure("Model file does not exist: $path")
             }
@@ -123,6 +143,18 @@ class ModelRepository(
         } catch (e: Exception) {
             failure("Model validation failed: ${e.message}")
         }
+        
+        // Cache validation result
+        val fileModified = file.lastModified()
+        validationCacheLock.withLock {
+            validationCache[path] = fileModified to result
+            // Clean up old cache entries periodically
+            if (validationCache.size > 50) {
+                validationCache.entries.removeIf { (now - it.value.first) > VALIDATION_CACHE_TTL_MS }
+            }
+        }
+        
+        result
     }
 
     /**
@@ -475,7 +507,19 @@ class ModelRepository(
 
     suspend fun captureKv(chatId: Long) = withContext(Dispatchers.IO) {
         val snapshot: ByteArray = EngineRuntime.captureState() ?: return@withContext
-        val packed = compress(snapshot)
+        
+        // Use optimized compression from KvCacheOptimizer (non-blocking, already on IO dispatcher)
+        // For large snapshots, use async compression to avoid blocking
+        val packed = if (snapshot.size > 512 * 1024) { // > 512KB
+            // Large snapshot - compress asynchronously to avoid blocking
+            withContext(Dispatchers.Default) {
+                compressOptimized(snapshot)
+            }
+        } else {
+            // Small snapshot - compress synchronously (fast enough)
+            compressOptimized(snapshot)
+        }
+        
         if (packed.size.toLong() > maxCacheBytes) {
             recordMiss()
             return@withContext // snapshot too large, skip caching
@@ -512,18 +556,53 @@ class ModelRepository(
         cacheDir.listFiles()?.forEach { runCatching { it.delete() } }
     }
 
-    private fun compress(input: ByteArray): ByteArray {
+    /**
+     * Optimized compression using KvCacheOptimizer for better performance
+     */
+    private fun compressOptimized(input: ByteArray): ByteArray {
         if (input.isEmpty()) return input
-        val buffer = ByteArrayOutputStream(input.size)
-        GZIPOutputStream(buffer).use { it.write(input) }
-        val compressed = buffer.toByteArray()
-        return if (compressed.size >= input.size) input else compressed
+        
+        val startTime = System.nanoTime()
+        // Use KvCacheOptimizer for better compression (LZ4 for small, optimal for large)
+        val (compressed, stats) = kvCacheOptimizer.compressOptimal(input)
+        val compressionTimeMs = (System.nanoTime() - startTime) / 1_000_000
+        
+        val result = if (compressed.size >= input.size) input else compressed
+        
+        // Log compression effectiveness periodically (only for significant compressions)
+        if (stats.compressionRatio < 0.9f) { // At least 10% compression
+            val savedBytes = input.size - compressed.size
+            Logger.d("KV Cache compression", mapOf(
+                "originalSize" to input.size,
+                "compressedSize" to compressed.size,
+                "ratio" to "%.2f".format(stats.compressionRatio),
+                "algorithm" to stats.algorithm,
+                "savedBytes" to savedBytes,
+                "compressionTimeMs" to compressionTimeMs
+            ))
+        }
+        
+        return result
+    }
+    
+    /**
+     * Legacy compression method (kept for compatibility)
+     */
+    private fun compress(input: ByteArray): ByteArray {
+        return compressOptimized(input)
     }
 
+    /**
+     * Optimized decompression using KvCacheOptimizer
+     */
     private fun decompress(input: ByteArray): ByteArray {
         if (input.isEmpty()) return input
         return runCatching {
-            GZIPInputStream(ByteArrayInputStream(input)).use { it.readBytes() }
+            // Try optimized decompression first
+            kvCacheOptimizer.decompressOptimal(input) ?: run {
+                // Fallback to legacy GZIP if optimized fails
+                GZIPInputStream(ByteArrayInputStream(input)).use { it.readBytes() }
+            }
         }.getOrElse { input }
     }
 
@@ -559,16 +638,48 @@ class ModelRepository(
     }
 
     private fun trimCacheLocked() {
+        // Check if we need to evict
+        val needsEviction = cacheIndex.size > maxCacheFiles || cacheBytes > maxCacheBytes
+        if (!needsEviction) {
+            updateStatsLocked()
+            return
+        }
+
+        val initialSize = cacheIndex.size
+        val initialBytes = cacheBytes
+        var evictedCount = 0
+
+        // Evict until we're under limits
         val iterator = cacheIndex.entries.iterator()
         while ((cacheIndex.size > maxCacheFiles || cacheBytes > maxCacheBytes) && iterator.hasNext()) {
             val eldest = iterator.next()
-            cacheBytes -= eldest.value.size
+            val evictedSize = eldest.value.size
+            cacheBytes -= evictedSize
             if (cacheBytes < 0) cacheBytes = 0
             runCatching { if (eldest.value.file.exists()) eldest.value.file.delete() }
             iterator.remove()
             cacheEvictions.incrementAndGet()
-            Logger.i("KV eviction for chat ${eldest.key}")
+            evictedCount++
+            Logger.d("KV Cache eviction", mapOf(
+                "chatId" to eldest.key,
+                "size" to evictedSize,
+                "remainingEntries" to cacheIndex.size,
+                "remainingBytes" to cacheBytes
+            ))
         }
+
+        // Log eviction summary
+        if (evictedCount > 0) {
+            Logger.i("KV Cache trim complete", mapOf(
+                "evictedCount" to evictedCount,
+                "initialSize" to initialSize,
+                "finalSize" to cacheIndex.size,
+                "initialBytes" to initialBytes,
+                "finalBytes" to cacheBytes,
+                "freedBytes" to (initialBytes - cacheBytes)
+            ))
+        }
+
         updateStatsLocked()
     }
 
@@ -588,15 +699,26 @@ class ModelRepository(
         
         // Log cache stats periodically (only on significant changes)
         val total = stats.hits + stats.misses
-        if (total > 0 && (stats.hits % 10 == 0L || stats.misses % 10 == 0L || stats.evictions > 0)) {
+        val hitRate = if (total > 0) (stats.hits.toFloat() / total.toFloat() * 100f).toInt() else 0
+        
+        // Log when evictions occur, hit rate changes significantly, or cache size is large
+        val shouldLog = stats.evictions > 0 || 
+                       (total > 0 && (stats.hits % 10 == 0L || stats.misses % 10 == 0L)) ||
+                       (stats.bytes > maxCacheBytes * 0.8) // Log when approaching limit
+        
+        if (shouldLog) {
             Logger.i(
                 "KV Cache stats",
                 mapOf(
                     "hits" to stats.hits,
                     "misses" to stats.misses,
-                    "hitRate" to if (total > 0) (stats.hits.toFloat() / total.toFloat() * 100f).toInt() else 0,
+                    "hitRate" to hitRate,
                     "evictions" to stats.evictions,
-                    "bytes" to stats.bytes
+                    "bytes" to stats.bytes,
+                    "maxBytes" to maxCacheBytes,
+                    "bytesUsagePct" to ((stats.bytes.toFloat() / maxCacheBytes.toFloat() * 100f).toInt()),
+                    "entries" to cacheIndex.size,
+                    "maxEntries" to maxCacheFiles
                 )
             )
         }

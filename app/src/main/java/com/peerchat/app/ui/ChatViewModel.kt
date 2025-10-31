@@ -16,6 +16,7 @@ import com.peerchat.app.util.optStringOrNull
 import com.peerchat.app.ui.stream.ReasoningParser
 import com.peerchat.data.db.Message
 import com.peerchat.engine.EngineMetrics
+import com.peerchat.engine.EngineNative
 import com.peerchat.rag.Retriever
 import com.peerchat.rag.RagService
 import com.peerchat.templates.TemplateCatalog
@@ -602,6 +603,26 @@ class ChatViewModel @Inject constructor(
                             )
                         }
                     }
+                    is EngineStreamEvent.Error -> {
+                        Logger.w("ChatViewModel: streaming error", mapOf(
+                            "chatId" to chatId,
+                            "error" to event.message,
+                            "recoverable" to event.recoverable
+                        ))
+                        updateStreamingState {
+                            it.copy(
+                                isStreaming = false,
+                                visibleText = "",
+                                reasoningText = "",
+                                reasoningChars = 0,
+                                reasoningDurationMs = null,
+                                metrics = EngineMetrics.empty().copy(stopReason = "error")
+                            )
+                        }
+                    }
+                    is EngineStreamEvent.Checkpoint -> {
+                        // Handle checkpoint if needed for chat resumption
+                    }
                 }
             }
             Logger.i(
@@ -610,11 +631,19 @@ class ChatViewModel @Inject constructor(
             )
             OperationResult.Success(Unit)
         } catch (e: CancellationException) {
+            // Clean up on cancellation
+            runCatching { 
+                EngineNative.abort() // Ensure native generation is aborted
+                modelRepository.clearKv(chatId) 
+            }
             updateStreamingState { StreamingUiState() }
             throw e
         } catch (e: Exception) {
-            // Clean up on error
-            runCatching { modelRepository.clearKv(chatId) }
+            // Clean up on error - ensure all resources are released
+            runCatching { 
+                EngineNative.abort() // Ensure native generation is aborted
+                modelRepository.clearKv(chatId) 
+            }
             updateStreamingState { StreamingUiState() }
             Logger.e(
                 "performSendPrompt: exception",

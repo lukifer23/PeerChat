@@ -140,8 +140,4 @@
 -keep class com.tom_roush.pdfbox.** { *; }
 -dontwarn com.tom_roush.pdfbox.**
 
-# Keep HTTP client classes
--keep class okhttp3.** { *; }
--keep class okio.** { *; }
--dontwarn okhttp3.**
--dontwarn okio.**
+# (Removed okhttp/okio keeps; not used)

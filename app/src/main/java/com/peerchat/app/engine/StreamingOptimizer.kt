@@ -63,6 +63,21 @@ class StreamingOptimizer(
                             batchChannel.send(TokenBatch(emptyList(), event.metrics))
                         }
                     }
+                    is EngineStreamEvent.Error -> {
+                        // Flush any remaining tokens with error metrics
+                        if (tokenBuffer.isNotEmpty()) {
+                            val errorMetrics = EngineMetrics.empty().copy(stopReason = "error")
+                            val batch = TokenBatch(tokenBuffer.toList(), errorMetrics)
+                            batchChannel.send(batch)
+                            tokenBuffer.clear()
+                        } else {
+                            val errorMetrics = EngineMetrics.empty().copy(stopReason = "error")
+                            batchChannel.send(TokenBatch(emptyList(), errorMetrics))
+                        }
+                    }
+                    is EngineStreamEvent.Checkpoint -> {
+                        // Ignore checkpoints in optimizer
+                    }
                 }
             }
 

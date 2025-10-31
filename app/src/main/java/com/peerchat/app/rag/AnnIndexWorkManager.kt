@@ -12,12 +12,19 @@ object AnnIndexWorkManager {
 
     fun scheduleRebuild(context: Context, delay: Duration = Duration.ofSeconds(15)) {
         val constraints = Constraints.Builder()
-            .setRequiresBatteryNotLow(false)
+            .setRequiresBatteryNotLow(false) // Allow indexing even on low battery
+            .setRequiresStorageNotLow(true) // Require sufficient storage
+            .setRequiredNetworkType(androidx.work.NetworkType.NOT_REQUIRED) // No network needed
             .build()
 
         val request = OneTimeWorkRequestBuilder<AnnIndexRebuildWorker>()
             .setInitialDelay(delay)
             .setConstraints(constraints)
+            .setBackoffCriteria(
+                androidx.work.BackoffPolicy.EXPONENTIAL,
+                10000L, // 10 seconds minimum backoff
+                java.util.concurrent.TimeUnit.MILLISECONDS
+            )
             .build()
 
         WorkManager.getInstance(context)

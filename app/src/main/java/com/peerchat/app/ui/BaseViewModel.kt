@@ -6,6 +6,9 @@ import com.peerchat.app.data.OperationResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.min
 import kotlin.math.pow
@@ -18,6 +21,10 @@ abstract class BaseViewModel : ViewModel() {
 
     // Active jobs for proper cancellation
     private val activeJobs = mutableSetOf<Job>()
+    
+    // Loading state tracking
+    private val _isLoading = MutableStateFlow(false)
+    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     /**
      * Launch a coroutine job with automatic cleanup
@@ -26,6 +33,27 @@ abstract class BaseViewModel : ViewModel() {
         return viewModelScope.launch(block = block).also { job ->
             activeJobs.add(job)
             job.invokeOnCompletion { activeJobs.remove(job) }
+        }
+    }
+    
+    /**
+     * Launch a coroutine with loading state management
+     */
+    protected fun <T> launchWithLoading(
+        operation: suspend CoroutineScope.() -> T,
+        onSuccess: (T) -> Unit = {},
+        onError: (Throwable) -> Unit = {}
+    ): Job {
+        return launchCancellable {
+            try {
+                _isLoading.value = true
+                val result = operation()
+                onSuccess(result)
+            } catch (e: Exception) {
+                onError(e)
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
 
@@ -60,17 +88,23 @@ abstract class BaseViewModel : ViewModel() {
     }
 
     /**
-     * Execute an operation with automatic error handling
+     * Execute an operation with automatic error handling and loading state
      */
     protected fun <T> executeOperation(
         operation: suspend () -> OperationResult<T>,
         successMessage: String? = null,
         failureMessage: String? = null,
-        onSuccess: (T) -> Unit = {}
+        onSuccess: (T) -> Unit = {},
+        showLoading: Boolean = false
     ) {
         launchCancellable {
-            val result = operation()
-            handleOperation(result, successMessage, failureMessage, onSuccess)
+            if (showLoading) _isLoading.value = true
+            try {
+                val result = operation()
+                handleOperation(result, successMessage, failureMessage, onSuccess)
+            } finally {
+                if (showLoading) _isLoading.value = false
+            }
         }
     }
 

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -29,12 +30,22 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.peerchat.data.db.Message
 import com.peerchat.app.ui.theme.LocalElevations
 import com.peerchat.app.ui.theme.LocalSpacing
+import com.peerchat.app.util.Logger
 import dev.jeziellago.compose.markdowntext.MarkdownText
+import kotlinx.coroutines.delay
 import java.util.regex.Pattern
 
 @Composable
@@ -170,16 +181,29 @@ fun MessageBubble(
                 }
             }
 
+            val codeBlocks by remember(message.contentMarkdown) {
+                derivedStateOf { extractCodeBlocksWithLanguage(message.contentMarkdown) }
+            }
+            
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.spacedBy(spacing.tiny),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Spacer(modifier = Modifier.weight(1f))
                 if (showCopyButton) {
-                    TextButton(
-                        onClick = { clipboard.setText(AnnotatedString(message.contentMarkdown)) },
-                        modifier = Modifier.semantics { contentDescription = "Copy message to clipboard" }
-                    ) { Text("Copy") }
+                    CopyButton(
+                        text = message.contentMarkdown,
+                        label = "Copy",
+                        clipboard = clipboard
+                    )
+                }
+                codeBlocks.forEachIndexed { idx, (language, code) ->
+                    CopyButton(
+                        text = code,
+                        label = if (language.isNotBlank()) "Copy $language" else "Copy code #${idx + 1}",
+                        clipboard = clipboard
+                    )
                 }
             }
         }
@@ -232,7 +256,7 @@ fun StreamingMessageBubble(
                         }
                     }
                     if (showReasoning) {
-                        Text(reasoningText, style = MaterialTheme.typography.bodySmall)
+                        MarkdownText(reasoningText)
                     }
                 }
             }
@@ -240,7 +264,7 @@ fun StreamingMessageBubble(
             if (currentText.isNotBlank()) {
                 MarkdownText(currentText)
                 val codeBlocks by remember(currentText) {
-                    derivedStateOf { extractCodeBlocks(currentText) }
+                    derivedStateOf { extractCodeBlocksWithLanguage(currentText) }
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -249,16 +273,18 @@ fun StreamingMessageBubble(
                 ) {
                     Spacer(modifier = Modifier.weight(1f))
                     if (showCopyButton) {
-                        TextButton(onClick = {
-                            clipboard.setText(AnnotatedString(currentText))
-                        }) { Text("Copy") }
+                        CopyButton(
+                            text = currentText,
+                            label = "Copy",
+                            clipboard = clipboard
+                        )
                     }
-                    codeBlocks.forEachIndexed { idx, block ->
-                        TextButton(onClick = {
-                            clipboard.setText(AnnotatedString(block))
-                        }) {
-                            Text("Copy code #${idx + 1}")
-                        }
+                    codeBlocks.forEachIndexed { idx, (language, code) ->
+                        CopyButton(
+                            text = code,
+                            label = if (language.isNotBlank()) "Copy $language" else "Copy code #${idx + 1}",
+                            clipboard = clipboard
+                        )
                     }
                 }
             }
@@ -284,14 +310,66 @@ fun PerformanceMetrics(
     }
 }
 
-private fun extractCodeBlocks(markdown: String): List<String> {
-    val pattern = Pattern.compile("```[a-zA-Z0-9_-]*\\n([\\s\\S]*?)```", Pattern.MULTILINE)
+data class CodeBlockWithLanguage(val language: String, val code: String)
+
+fun extractCodeBlocksWithLanguage(markdown: String): List<CodeBlockWithLanguage> {
+    val pattern = Pattern.compile("```([a-zA-Z0-9_+-]*)?\\n([\\s\\S]*?)```", Pattern.MULTILINE)
     val matcher = pattern.matcher(markdown)
-    val out = mutableListOf<String>()
+    val out = mutableListOf<CodeBlockWithLanguage>()
     while (matcher.find()) {
-        out.add(matcher.group(1) ?: "")
+        val language = matcher.group(1)?.trim() ?: ""
+        val code = matcher.group(2) ?: ""
+        out.add(CodeBlockWithLanguage(language, code))
     }
     return out
+}
+
+@Composable
+fun CopyButton(
+    text: String,
+    label: String,
+    clipboard: ClipboardManager
+) {
+    var copied by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(2000)
+            copied = false
+        }
+    }
+    
+    TextButton(
+        onClick = {
+            runCatching {
+                clipboard.setText(AnnotatedString(text))
+                copied = true
+                Logger.i("CopyButton: copied to clipboard", mapOf("length" to text.length, "label" to label))
+            }.onFailure { e ->
+                Logger.e("CopyButton: clipboard copy failed", mapOf("error" to e.message, "label" to label), e)
+                copied = false
+            }
+        },
+        modifier = Modifier.semantics { 
+            contentDescription = if (copied) "Copied!" else "Copy $label to clipboard"
+        }
+    ) {
+        if (copied) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Copied",
+                modifier = Modifier.height(16.dp)
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.ContentCopy,
+                contentDescription = "Copy",
+                modifier = Modifier.height(16.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(if (copied) "Copied!" else label)
+    }
 }
 
 

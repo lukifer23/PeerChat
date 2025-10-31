@@ -169,12 +169,15 @@ bool ensure_embedding_context_locked() {
     params.n_threads_batch = g_state.n_threads;
     params.embeddings = true;
 
+    // Optimize batch sizes for embedding context (typically smaller than inference context)
     if (g_state.use_vulkan) {
-        params.n_batch = std::min(1024U, static_cast<uint32_t>(params.n_ctx) / 4);
+        // GPU-accelerated embeddings: moderate batch sizes
+        params.n_batch = std::min(1024U, static_cast<uint32_t>(params.n_ctx / 4));
         params.n_ubatch = std::min(256U, params.n_batch / 4);
         params.offload_kqv = true;
     } else {
-        params.n_batch = std::min(256U, static_cast<uint32_t>(params.n_ctx) / 8);
+        // CPU embeddings: smaller batches for memory efficiency
+        params.n_batch = std::min(256U, static_cast<uint32_t>(params.n_ctx / 8));
         params.n_ubatch = std::min(64U, params.n_batch / 4);
     }
 
@@ -690,7 +693,21 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
                                                 jint nGpuLayers,
                                                 jboolean useVulkan) {
     (void) thiz;
+
+    // Check for JNI exceptions early
+    if (env->ExceptionCheck()) {
+        LOGE("loadModel: JNI exception pending at entry, clearing");
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
+
     const char * path = env->GetStringUTFChars(jModelPath, nullptr);
+    if (env->ExceptionCheck()) {
+        LOGE("loadModel: failed to get model path string");
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
+
     const std::string path_str = path ? path : "";
     if (!file_exists(path)) {
         LOGE("model path not found: %s", path ? path : "(null)");
@@ -720,18 +737,37 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
     cparams.n_threads = std::max(1, nThreads);
     cparams.n_threads_batch = std::max(1, nThreads);
 
-    // Performance optimizations for Vulkan
-    if (useVulkan) {
-        // Increase batch size for better GPU utilization
-        cparams.n_batch = std::min(2048U, cparams.n_ctx / 4);
-        cparams.n_ubatch = std::min(512U, cparams.n_batch / 4);
-
+    // Dynamic batch size optimization based on context length, GPU layers, and device capabilities
+    if (useVulkan && nGpuLayers > 0) {
+        // GPU-accelerated inference: optimize batch sizes for GPU utilization
+        // Batch size scales with context length and GPU layers
+        // More GPU layers = can handle larger batches
+        const uint32_t baseBatch = std::min(2048U, static_cast<uint32_t>(cparams.n_ctx / 4));
+        
+        // Scale batch size based on GPU layers (more layers = better GPU utilization)
+        const float gpuLayerScale = std::min(1.5f, 1.0f + (nGpuLayers / 50.0f));
+        const uint32_t scaledBatch = static_cast<uint32_t>(baseBatch * gpuLayerScale);
+        
+        // Context-aware batch sizing: larger contexts benefit from larger batches
+        const float contextScale = cparams.n_ctx >= 8192 ? 1.2f : (cparams.n_ctx >= 4096 ? 1.0f : 0.8f);
+        cparams.n_batch = std::min(4096U, static_cast<uint32_t>(scaledBatch * contextScale));
+        
+        // Unified batch: smaller for memory efficiency, scales with main batch
+        cparams.n_ubatch = std::min(1024U, std::max(256U, cparams.n_batch / 4));
+        
         // Optimize for GPU memory usage
         cparams.offload_kqv = true;
+        
+        LOGI("loadModel: GPU batch optimization n_batch=%u ubatch=%u layers=%d ctx=%d scale=%.2f",
+             cparams.n_batch, cparams.n_ubatch, nGpuLayers, cparams.n_ctx, gpuLayerScale);
     } else {
-        // CPU optimizations
-        cparams.n_batch = std::min(512U, cparams.n_ctx / 8);
+        // CPU-only inference: conservative batch sizes
+        // Smaller batches reduce memory pressure on CPU
+        cparams.n_batch = std::min(512U, static_cast<uint32_t>(cparams.n_ctx / 8));
         cparams.n_ubatch = std::min(128U, cparams.n_batch / 4);
+        
+        LOGI("loadModel: CPU batch optimization n_batch=%u ubatch=%u ctx=%d",
+             cparams.n_batch, cparams.n_ubatch, cparams.n_ctx);
     }
 
     LOGI("loadModel: context n_ctx=%d threads=%d batch=%u ubatch=%u offload_kqv=%d use_vulkan=%d",
@@ -742,9 +778,21 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
          cparams.offload_kqv ? 1 : 0,
          useVulkan ? 1 : 0);
 
-    llama_context * ctx = llama_init_from_model(model, cparams);
+    llama_context * ctx = nullptr;
+    try {
+        ctx = llama_init_from_model(model, cparams);
+    } catch (const std::exception& e) {
+        LOGE("failed to create llama context: %s", e.what());
+        llama_model_free(model);
+        return JNI_FALSE;
+    } catch (...) {
+        LOGE("failed to create llama context: unknown error");
+        llama_model_free(model);
+        return JNI_FALSE;
+    }
+
     if (!ctx) {
-        LOGE("failed to create llama context");
+        LOGE("failed to create llama context: null context returned");
         llama_model_free(model);
         return JNI_FALSE;
     }
@@ -764,7 +812,8 @@ Java_com_peerchat_engine_EngineNative_loadModel(JNIEnv * env, jobject thiz,
         unload_locked();
         return JNI_FALSE;
     }
-    LOGI("model loaded n_ctx=%d n_threads=%d gpu_layers=%d", g_state.n_ctx, g_state.n_threads, g_state.n_gpu_layers);
+    LOGI("model loaded n_ctx=%d n_threads=%d gpu_layers=%d batch=%u ubatch=%u",
+         g_state.n_ctx, g_state.n_threads, g_state.n_gpu_layers, cparams.n_batch, cparams.n_ubatch);
     return JNI_TRUE;
 }
 
@@ -830,15 +879,33 @@ Java_com_peerchat_engine_EngineNative_generateStream(JNIEnv * env, jobject thiz,
 
     LOGI("generateStream: entry temp=%.2f topP=%.2f topK=%d maxTokens=%d", temperature, topP, topK, maxTokens);
 
+    // Check for JNI exceptions early
+    if (env->ExceptionCheck()) {
+        LOGE("generateStream: JNI exception pending at entry, clearing");
+        env->ExceptionClear();
+        return;
+    }
+
     StreamContext stream{};
     if (jCallback) {
         stream.env = env;
         stream.callback = jCallback;
         jclass cbCls = env->GetObjectClass(jCallback);
+        if (!cbCls) {
+            LOGE("generateStream: failed to get callback class");
+            return;
+        }
         stream.on_token = env->GetMethodID(cbCls, "onToken", "(Ljava/lang/String;Z)V");
         env->DeleteLocalRef(cbCls);
         if (!stream.on_token) {
             LOGE("TokenCallback.onToken not found");
+            return;
+        }
+
+        // Check for exceptions after JNI calls
+        if (env->ExceptionCheck()) {
+            LOGE("generateStream: exception during callback setup");
+            env->ExceptionClear();
             return;
         }
     }
@@ -851,15 +918,42 @@ Java_com_peerchat_engine_EngineNative_generateStream(JNIEnv * env, jobject thiz,
     req.top_k = topK;
     req.max_tokens = std::max(1, maxTokens);
 
+    // Check for exceptions after string conversion
+    if (env->ExceptionCheck()) {
+        LOGE("generateStream: exception during string conversion");
+        env->ExceptionClear();
+        return;
+    }
+
     jsize stop_len = jStop ? env->GetArrayLength(jStop) : 0;
     for (jsize i = 0; i < stop_len; ++i) {
         jstring js = static_cast<jstring>(env->GetObjectArrayElement(jStop, i));
-        req.stops.push_back(jstring_to_utf8(env, js));
-        env->DeleteLocalRef(js);
+        if (js) {
+            req.stops.push_back(jstring_to_utf8(env, js));
+            env->DeleteLocalRef(js);
+        }
+
+        // Check for exceptions in loop
+        if (env->ExceptionCheck()) {
+            LOGE("generateStream: exception during stop sequence processing");
+            env->ExceptionClear();
+            return;
+        }
     }
 
     GenerationSummary summary;
-    generate_internal(req, jCallback ? &stream : nullptr, nullptr, summary);
+    try {
+        generate_internal(req, jCallback ? &stream : nullptr, nullptr, summary);
+    } catch (const std::exception& e) {
+        LOGE("generateStream: internal error: %s", e.what());
+        summary.success = false;
+        summary.reason = StopReason::Error;
+    } catch (...) {
+        LOGE("generateStream: unknown internal error");
+        summary.success = false;
+        summary.reason = StopReason::Error;
+    }
+
     LOGI("generateStream: exit success=%d reason=%d tokens=%d", summary.success ? 1 : 0, static_cast<int>(summary.reason), summary.metrics.generation_tokens);
 }
 
@@ -867,12 +961,35 @@ extern "C" JNIEXPORT jobjectArray JNICALL
 Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectArray jTexts) {
     (void) thiz;
     std::lock_guard<std::mutex> lock(g_state.mutex);
+
+    // Check for JNI exceptions early
+    if (env->ExceptionCheck()) {
+        LOGE("embed: JNI exception pending at entry, clearing");
+        env->ExceptionClear();
+        return nullptr;
+    }
+
     jclass floatArrayClass = env->FindClass("[F");
+    if (env->ExceptionCheck()) {
+        LOGE("embed: failed to find float[] class");
+        env->ExceptionClear();
+        return nullptr;
+    }
+
     if (!g_state.model || !floatArrayClass) {
-        return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
+        LOGE("embed: no model loaded or cannot resolve float[] class");
+        // Fallback to empty object array if we cannot resolve float[] class
+        jclass objClass = env->FindClass("java/lang/Object");
+        if (objClass && !env->ExceptionCheck()) {
+            return static_cast<jobjectArray>(env->NewObjectArray(0, objClass, nullptr));
+        } else {
+            env->ExceptionClear();
+            return nullptr;
+        }
     }
 
     if (!ensure_embedding_context_locked()) {
+        LOGE("embed: failed to ensure embedding context");
         return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
     }
 
@@ -892,7 +1009,8 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
     std::vector<std::vector<float>> embeddings;
     embeddings.reserve(count);
 
-    llama_memory_clear(llama_get_memory(ectx), true);
+    // Non-destructive clear to avoid aggressive deallocation under Scudo
+    llama_memory_clear(llama_get_memory(ectx), false);
     llama_set_embeddings(ectx, true);
 
     for (jsize i = 0; i < count; ++i) {
@@ -950,7 +1068,8 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         embeddings.push_back(std::move(vec));
     }
 
-    llama_memory_clear(llama_get_memory(ectx), true);
+    // Non-destructive clear to keep allocator state stable between calls
+    llama_memory_clear(llama_get_memory(ectx), false);
     llama_set_embeddings(ectx, false);
 
     jobjectArray outer = env->NewObjectArray(count, floatArrayClass, nullptr);
@@ -1130,4 +1249,53 @@ Java_com_peerchat_engine_EngineNative_stateRestoreFrom(JNIEnv * env, jobject thi
         reset_metrics_locked();
     }
     return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_peerchat_engine_EngineNative_recover(JNIEnv * env, jobject thiz) {
+    (void) env;
+    (void) thiz;
+
+    LOGI("recover: attempting to recover engine state");
+
+    // Check for JNI exceptions early
+    if (env->ExceptionCheck()) {
+        LOGE("recover: JNI exception pending at entry, clearing");
+        env->ExceptionClear();
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_state.mutex);
+
+    // Clear abort flag
+    g_state.should_abort.store(false, std::memory_order_release);
+
+    // Try to clear memory if context exists
+    if (g_state.ctx) {
+        try {
+            llama_memory_clear(llama_get_memory(g_state.ctx), false);
+            LOGI("recover: cleared context memory");
+        } catch (const std::exception& e) {
+            LOGE("recover: failed to clear context memory: %s", e.what());
+        } catch (...) {
+            LOGE("recover: failed to clear context memory: unknown error");
+        }
+    }
+
+    // Try to clear embedding context memory if it exists
+    if (g_state.embed_ctx) {
+        try {
+            llama_memory_clear(llama_get_memory(g_state.embed_ctx), false);
+            LOGI("recover: cleared embedding context memory");
+        } catch (const std::exception& e) {
+            LOGE("recover: failed to clear embedding context memory: %s", e.what());
+        } catch (...) {
+            LOGE("recover: failed to clear embedding context memory: unknown error");
+        }
+    }
+
+    // Reset metrics
+    reset_metrics_locked();
+
+    LOGI("recover: engine state recovery completed");
 }

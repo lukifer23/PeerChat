@@ -273,35 +273,60 @@ object TemplateCatalog {
         val tags = metadata.tags?.lowercase().orEmpty()
 
         fun matches(value: String, vararg probes: String): Boolean =
-            probes.any { probe -> value.contains(probe) }
+            probes.any { probe -> value.contains(probe, ignoreCase = true) }
 
+        // More specific patterns first, then generic fallbacks
         return when {
+            // Llama 3 detection (most specific)
             matches(tmpl, "<|start_header_id|>", "llama-3", "meta-llama") ||
-                matches(tokenizer, "llama-3") ||
-                matches(arch, "llama") -> TemplateIds.LLAMA_3
+                matches(tokenizer, "llama-3", "meta-llama-3") ||
+                (matches(arch, "llama") && matches(tokenizer, "llama-3")) -> TemplateIds.LLAMA_3
 
+            // Qwen detection
             matches(arch, "qwen") ||
                 matches(tokenizer, "qwen") ||
-                matches(tmpl, "<|im_start|>") -> TemplateIds.QWEN
+                matches(tmpl, "<|im_start|>", "<|im_end|>") ||
+                matches(tags, "qwen") -> TemplateIds.QWEN
 
+            // Granite detection
             matches(arch, "granite") ||
-                matches(tokenizer, "granite") -> TemplateIds.CHATML
+                matches(tokenizer, "granite") ||
+                matches(tags, "granite") -> TemplateIds.CHATML
 
+            // Gemma detection
             matches(arch, "gemma") ||
-                matches(tmpl, "<start_of_turn>") -> TemplateIds.GEMMA
+                matches(tmpl, "<start_of_turn>", "<end_of_turn>") ||
+                matches(tokenizer, "gemma") -> TemplateIds.GEMMA
 
+            // Mistral detection
             matches(arch, "mistral", "mixtral") ||
-                matches(tags, "mistral") ||
-                matches(tmpl, "[inst]") -> TemplateIds.MISTRAL
+                matches(tags, "mistral", "mixtral") ||
+                matches(tmpl, "[inst]", "[system]", "mistral") ||
+                matches(tokenizer, "mistral", "mixtral") -> TemplateIds.MISTRAL
 
+            // InternVL uses Qwen-style templates
             matches(arch, "internvl") -> TemplateIds.QWEN
 
-            else -> TemplateIds.LLAMA_3
+            // Generic Llama fallback (check for Llama architecture without specific version)
+            matches(arch, "llama") && !matches(arch, "llama-3") -> {
+                // Try to infer from tokenizer or template
+                when {
+                    matches(tmpl, "[inst]", "[system]") -> TemplateIds.MISTRAL
+                    matches(tmpl, "<|im_start|>") -> TemplateIds.QWEN
+                    else -> TemplateIds.LLAMA_3 // Default to Llama 3 for generic Llama
+                }
+            }
+
+            // Default fallback
+            else -> {
+                TemplateIds.LLAMA_3
+            }
         }
     }
 
     fun parseMetadata(rawJson: String?): ModelMetadata {
         if (rawJson.isNullOrBlank()) return ModelMetadata(null, null, null, null)
+        
         return runCatching {
             val obj = org.json.JSONObject(rawJson)
             fun extract(vararg keys: String): String? {
@@ -316,13 +341,35 @@ object TemplateCatalog {
                 }
                 return null
             }
+            
+            // Try nested keys (e.g., "general.architecture")
+            fun extractNested(key: String): String? {
+                val parts = key.split(".")
+                var current: Any? = obj
+                for (part in parts) {
+                    current = (current as? org.json.JSONObject)?.opt(part)
+                    if (current == null) return null
+                }
+                return when (current) {
+                    is String -> current.takeIf { it.isNotBlank() }
+                    is Number -> current.toString()
+                    else -> null
+                }
+            }
+            
             ModelMetadata(
-                arch = extract("arch", "general.architecture"),
-                chatTemplate = extract("chatTemplate", "tokenizer.chat_template"),
-                tokenizerModel = extract("tokenizerModel", "tokenizer.ggml.model"),
-                tags = extract("tags", "general.tags"),
+                arch = extract("arch", "general.architecture")
+                    ?: extractNested("general.architecture"),
+                chatTemplate = extract("chatTemplate", "tokenizer.chat_template")
+                    ?: extractNested("tokenizer.chat_template"),
+                tokenizerModel = extract("tokenizerModel", "tokenizer.ggml.model")
+                    ?: extractNested("tokenizer.ggml.model"),
+                tags = extract("tags", "general.tags")
+                    ?: extractNested("general.tags"),
             )
-        }.getOrElse { ModelMetadata(null, null, null, null) }
+        }.getOrElse { e ->
+            ModelMetadata(null, null, null, null)
+        }
     }
 
     fun detect(rawMetadataJson: String?): String = detect(parseMetadata(rawMetadataJson))

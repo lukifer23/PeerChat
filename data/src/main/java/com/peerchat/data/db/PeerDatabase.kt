@@ -17,8 +17,8 @@ import androidx.room.TypeConverters
         ModelManifest::class,
         BenchmarkResult::class,
     ],
-    version = 4,
-    exportSchema = false,
+    version = 6,
+    exportSchema = true,
 )
 abstract class PeerDatabase : RoomDatabase() {
     abstract fun folderDao(): FolderDao

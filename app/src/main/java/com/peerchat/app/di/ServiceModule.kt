@@ -2,6 +2,7 @@ package com.peerchat.app.di
 
 import android.content.Context
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.engine.AndroidEmbeddingService
 import com.peerchat.app.engine.DocumentService
 import com.peerchat.app.engine.ModelManifestService
 import com.peerchat.app.engine.ModelRepository
@@ -69,6 +70,12 @@ object ServiceModule {
 
     @Provides
     @Singleton
+    fun provideAndroidEmbeddingService(@ApplicationContext context: Context): AndroidEmbeddingService {
+        return AndroidEmbeddingService(context)
+    }
+
+    @Provides
+    @Singleton
     fun providePerformanceMonitor(@ApplicationContext context: Context): PerformanceMonitor {
         return PerformanceMonitor(context)
     }
@@ -78,5 +85,6 @@ object ServiceModule {
     fun provideRetriever(): com.peerchat.rag.Retriever {
         return com.peerchat.rag.RetrieverProvider.instance
     }
+
 
 }

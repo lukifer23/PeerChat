@@ -30,6 +30,7 @@ data class ModelState(
     val engineMetrics: EngineMetrics = EngineMetrics.empty(),
     val modelMeta: String? = null,
     val manifests: List<ModelManifest> = emptyList(),
+    val activeManifestId: Long? = null,
     val detectedTemplateId: String? = null,
     val storedConfig: StoredEngineConfig? = null,
     val modelPath: String = "",
@@ -37,6 +38,7 @@ data class ModelState(
     val contextText: String = "4096",
     val gpuText: String = "20",
     val useVulkan: Boolean = true,
+    val useGpuMode: Boolean = true, // true = GPU, false = CPU
     val importingModel: Boolean = false,
     val cacheStats: ModelRepository.CacheStats = ModelRepository.CacheStats(),
     val isOfflineMode: Boolean = false,
@@ -89,7 +91,51 @@ data class HomeUiState(
     val documents: DocumentState = DocumentState(),
     val rag: RagRuntimeState = RagRuntimeState(),
     val dialogState: DialogState = DialogState.None
-)
+) {
+    /**
+     * Validate state consistency
+     */
+    fun validate(): ValidationResult {
+        val errors = mutableListOf<String>()
+        
+        // Validate navigation state
+        if (navigation.activeChatId != null && 
+            !navigation.chats.any { it.id == navigation.activeChatId }) {
+            errors.add("Active chat ID (${navigation.activeChatId}) not found in chats list")
+        }
+        
+        if (navigation.selectedFolderId != null &&
+            !navigation.folders.any { it.id == navigation.selectedFolderId }) {
+            errors.add("Selected folder ID (${navigation.selectedFolderId}) not found in folders list")
+        }
+        
+        // Validate model state
+        if (model.isLoadingModel && model.loadProgress == null) {
+            errors.add("Loading flag is true but no progress information available")
+        }
+        
+        if (model.loadProgress != null && !model.isLoadingModel) {
+            errors.add("Load progress exists but loading flag is false")
+        }
+        
+        // Validate search state
+        if (search.searchQuery.isNotBlank() && search.searchResults.isEmpty() && 
+            model.engineStatus is EngineRuntime.EngineStatus.Loaded) {
+            // This is OK - search might be in progress or no results
+        }
+        
+        return if (errors.isEmpty()) {
+            ValidationResult.Valid
+        } else {
+            ValidationResult.Invalid(errors)
+        }
+    }
+    
+    sealed class ValidationResult {
+        data object Valid : ValidationResult()
+        data class Invalid(val errors: List<String>) : ValidationResult()
+    }
+}
 
 data class StreamingUiState(
     val isStreaming: Boolean = false,

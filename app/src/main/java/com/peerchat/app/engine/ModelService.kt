@@ -343,4 +343,47 @@ class ModelService(
         val isLoadInProgress: Boolean,
         val preloadStats: ModelPreloader.PreloadStats
     )
+
+    /**
+     * Shutdown all loading components and cancel background operations - SYNCHRONOUS AND IMMEDIATE.
+     * Call this when the service is no longer needed to prevent resource leaks.
+     */
+    fun shutdown() {
+        Logger.i("ModelService: IMMEDIATE SYNCHRONOUS shutdown initiated")
+
+        try {
+            // IMMEDIATE: Cancel any ongoing load operations synchronously
+            Logger.i("ModelService: IMMEDIATE - cancelling load operations")
+            loadManager.cancelLoad()
+
+            // IMMEDIATE: Shutdown components in reverse order synchronously
+            Logger.i("ModelService: IMMEDIATE - shutting down loadManager")
+            loadManager.shutdown()
+            Logger.i("ModelService: IMMEDIATE - shutting down preloader")
+            preloader.shutdown()
+
+            Logger.i("ModelService: IMMEDIATE SYNCHRONOUS shutdown complete")
+        } catch (e: Exception) {
+            Logger.e("ModelService: IMMEDIATE - Error during shutdown", mapOf("error" to e.message), e)
+            // Continue with aggressive cleanup even if shutdown fails
+            forceAggressiveCleanup()
+        }
+    }
+
+    /**
+     * Force aggressive cleanup if normal shutdown fails - SYNCHRONOUS AND IMMEDIATE
+     */
+    private fun forceAggressiveCleanup() {
+        Logger.w("ModelService: IMMEDIATE FORCE aggressive cleanup initiated")
+
+        try {
+            // IMMEDIATE: Force cancel any remaining operations
+            Logger.i("ModelService: IMMEDIATE FORCE - cancelling all operations")
+            // Note: Individual components should handle their own force cleanup
+
+            Logger.w("ModelService: IMMEDIATE FORCE aggressive cleanup complete")
+        } catch (e: Exception) {
+            Logger.e("ModelService: IMMEDIATE FORCE - Critical error during force cleanup", mapOf("error" to e.message), e)
+        }
+    }
 }

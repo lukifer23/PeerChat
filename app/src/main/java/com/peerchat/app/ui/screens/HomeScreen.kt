@@ -230,6 +230,7 @@ fun HomeScreen(
                 onThreadChange = homeViewModel::updateThreadText,
                 onContextChange = homeViewModel::updateContextText,
                 onGpuChange = homeViewModel::updateGpuText,
+                onUseGpuModeChange = homeViewModel::updateUseGpuMode,
                 onUseVulkanChange = homeViewModel::updateUseVulkan,
                 onLoadModel = homeViewModel::loadModel,
                 onUnloadModel = homeViewModel::unloadModel,

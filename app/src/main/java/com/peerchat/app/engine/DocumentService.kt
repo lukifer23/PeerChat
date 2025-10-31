@@ -17,13 +17,15 @@ import com.peerchat.engine.EngineRuntime
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.security.MessageDigest
 import kotlin.text.Charsets
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Service for managing document operations including import, indexing, and deletion.
- * Handles text extraction from various document formats.
+ * Handles text extraction from various document formats with comprehensive error recovery.
  */
 class DocumentService(
     private val context: Context,
@@ -32,6 +34,12 @@ class DocumentService(
     // Android native processing services
     private val androidPdfService = AndroidNativePdfService(context)
     private val androidOcrService = AndroidNativeOcrService(context)
+    
+    companion object {
+        private const val EXTRACTION_TIMEOUT_SECONDS = 60L
+        private const val MAX_EXTRACTION_RETRIES = 2
+    }
+
     /**
      * Import a document from a URI and index it for RAG.
      */
@@ -138,12 +146,21 @@ class DocumentService(
                 extractPdfTextWithFallback(uri)
             }
             mime.startsWith("text/") -> {
-                val text = resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                if (text.isBlank()) {
-                    OcrService.OcrResult.Failure("Text file is empty or could not be read")
-                } else {
-                    OcrService.OcrResult.Success(text)
-                }
+                withTimeoutOrNull(30.seconds) {
+                    try {
+                        val text = resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                        if (text.isBlank()) {
+                            OcrService.OcrResult.Failure("Text file is empty or could not be read")
+                        } else {
+                            OcrService.OcrResult.Success(text)
+                        }
+                    } catch (e: Exception) {
+                        Logger.w("DocumentService: text file extraction failed", mapOf(
+                            "error" to e.message
+                        ), e)
+                        OcrService.OcrResult.Failure("Text extraction failed: ${e.message}")
+                    }
+                } ?: OcrService.OcrResult.Failure("Text file extraction timed out")
             }
             mime.startsWith("image/") -> {
                 extractImageTextWithFallback(uri)
@@ -153,66 +170,178 @@ class DocumentService(
     }
 
     /**
-     * Extract text from PDF documents with Android native fallback.
+     * Extract text from PDF documents with Android native fallback and timeout handling.
      */
     private suspend fun extractPdfTextWithFallback(uri: Uri): OcrService.OcrResult {
-        // Try PdfBox first (primary method)
-        val pdfBoxText = extractPdfText(context.contentResolver, uri)
-        if (pdfBoxText.isNotBlank()) {
+        var lastError: String? = null
+        
+        // Try PdfBox first (primary method) with timeout
+        val pdfBoxText = withTimeoutOrNull(EXTRACTION_TIMEOUT_SECONDS.seconds) {
+            try {
+                extractPdfText(context.contentResolver, uri)
+            } catch (e: Exception) {
+                Logger.w("DocumentService: PdfBox extraction failed", mapOf(
+                    "error" to e.message,
+                    "uri" to uri.toString()
+                ), e)
+                lastError = "PdfBox failed: ${e.message}"
+                null
+            }
+        }
+        
+        if (pdfBoxText != null && pdfBoxText.isNotBlank()) {
+            Logger.i("DocumentService: PdfBox extraction succeeded", mapOf(
+                "textLength" to pdfBoxText.length
+            ))
             return OcrService.OcrResult.Success(pdfBoxText)
         }
 
-        // Fallback to Android native PDF processing
+        // Fallback to Android native PDF processing with timeout
         if (androidPdfService.canHandle(uri)) {
-            val nativeResult = androidPdfService.extractText(uri)
-            if (nativeResult.text.isNotBlank()) {
-                Logger.i("DocumentService: used Android native PDF extraction as fallback")
+            val nativeResult = withTimeoutOrNull(EXTRACTION_TIMEOUT_SECONDS.seconds) {
+                try {
+                    androidPdfService.extractText(uri)
+                } catch (e: Exception) {
+                    Logger.w("DocumentService: Android native PDF extraction failed", mapOf(
+                        "error" to e.message
+                    ), e)
+                    lastError = "Android native PDF failed: ${e.message}"
+                    null
+                }
+            }
+            
+            if (nativeResult != null && nativeResult.text.isNotBlank()) {
+                Logger.i("DocumentService: used Android native PDF extraction as fallback", mapOf(
+                    "textLength" to nativeResult.text.length
+                ))
                 return OcrService.OcrResult.Success(nativeResult.text)
             }
         }
 
-        return OcrService.OcrResult.Failure("PDF extraction failed with all available methods")
+        // If all methods failed, try partial extraction (first page only)
+        val partialResult = tryPartialPdfExtraction(uri)
+        if (partialResult != null) {
+            Logger.w("DocumentService: partial PDF extraction succeeded", mapOf(
+                "textLength" to partialResult.length,
+                "note" to "Only first page extracted"
+            ))
+            return OcrService.OcrResult.Success(partialResult)
+        }
+
+        return OcrService.OcrResult.Failure(
+            "PDF extraction failed with all available methods. ${lastError ?: "Unknown error"}"
+        )
+    }
+    
+    /**
+     * Try to extract text from just the first page of a PDF (partial extraction)
+     */
+    private suspend fun tryPartialPdfExtraction(uri: Uri): String? {
+        return withTimeoutOrNull(30.seconds) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    PDDocument.load(input).use { doc ->
+                        if (doc.numberOfPages > 0) {
+                            val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
+                            stripper.startPage = 1
+                            stripper.endPage = 1
+                            stripper.getText(doc)?.takeIf { it.isNotBlank() }
+                        } else null
+                    }
+                }
+            } catch (e: Exception) {
+                Logger.w("DocumentService: partial PDF extraction failed", mapOf(
+                    "error" to e.message
+                ), e)
+                null
+            }
+        }
     }
 
     /**
      * Extract text from PDF documents.
      */
     private fun extractPdfText(resolver: ContentResolver, uri: Uri): String {
-        return resolver.openInputStream(uri).use { input ->
-            if (input != null) {
-                PDDocument.load(input).use { doc ->
-                    val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
-                    stripper.getText(doc) ?: ""
-                }
-            } else ""
+        return try {
+            resolver.openInputStream(uri)?.use { input ->
+                if (input != null) {
+                    PDDocument.load(input).use { doc ->
+                        val stripper = com.tom_roush.pdfbox.text.PDFTextStripper()
+                        stripper.getText(doc) ?: ""
+                    }
+                } else ""
+            } ?: ""
+        } catch (e: Exception) {
+            Logger.w("DocumentService: PDF extraction error", mapOf(
+                "error" to e.message,
+                "uri" to uri.toString()
+            ), e)
+            throw e // Re-throw to be caught by caller
         }
     }
 
     /**
-     * Extract text from images with Android native OCR fallback.
+     * Extract text from images with Android native OCR fallback and timeout handling.
      */
     private suspend fun extractImageTextWithFallback(uri: Uri): OcrService.OcrResult {
-        // Try existing OCR service first
-        val existingResult = OcrService.extractText(context, uri)
+        var lastError: String? = null
+        
+        // Try existing OCR service first with timeout
+        val existingResult = withTimeoutOrNull(EXTRACTION_TIMEOUT_SECONDS.seconds) {
+            try {
+                OcrService.extractText(context, uri)
+            } catch (e: Exception) {
+                Logger.w("DocumentService: OCR service extraction failed", mapOf(
+                    "error" to e.message
+                ), e)
+                lastError = "OCR service failed: ${e.message}"
+                null
+            }
+        }
+        
         if (existingResult is OcrService.OcrResult.Success) {
+            Logger.i("DocumentService: OCR service extraction succeeded", mapOf(
+                "textLength" to existingResult.text.length
+            ))
             return existingResult
         }
 
-        // Fallback to Android native OCR
+        // Fallback to Android native OCR with timeout
         if (androidOcrService.canHandle(uri)) {
-            val nativeResult = androidOcrService.extractText(uri)
+            val nativeResult = withTimeoutOrNull(EXTRACTION_TIMEOUT_SECONDS.seconds) {
+                try {
+                    androidOcrService.extractText(uri)
+                } catch (e: Exception) {
+                    Logger.w("DocumentService: Android native OCR failed", mapOf(
+                        "error" to e.message
+                    ), e)
+                    lastError = "Android native OCR failed: ${e.message}"
+                    null
+                }
+            }
+            
             when (nativeResult) {
                 is AndroidNativeOcrService.OcrResult.Success -> {
-                    Logger.i("DocumentService: used Android native OCR as fallback")
+                    Logger.i("DocumentService: used Android native OCR as fallback", mapOf(
+                        "textLength" to nativeResult.ocrResult.text.length
+                    ))
                     return OcrService.OcrResult.Success(nativeResult.ocrResult.text)
                 }
                 is AndroidNativeOcrService.OcrResult.Failure -> {
-                    Logger.w("DocumentService: Android native OCR failed", mapOf("error" to nativeResult.error))
+                    if (lastError == null) {
+                        lastError = nativeResult.error
+                    }
+                }
+                null -> {
+                    // Timeout occurred
+                    lastError = "OCR extraction timed out after ${EXTRACTION_TIMEOUT_SECONDS}s"
                 }
             }
         }
 
-        return existingResult // Return original failure result
+        return OcrService.OcrResult.Failure(
+            "OCR extraction failed with all available methods. ${lastError ?: "Unknown error"}"
+        )
     }
 
     /**

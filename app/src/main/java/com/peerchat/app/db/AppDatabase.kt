@@ -1,6 +1,7 @@
 package com.peerchat.app.db
 
 import android.content.Context
+import com.peerchat.app.BuildConfig
 import com.peerchat.data.db.PeerDatabase
 import com.peerchat.data.db.PeerDatabaseProvider
 
@@ -9,7 +10,7 @@ object AppDatabase {
 
     fun get(context: Context): PeerDatabase {
         return INSTANCE ?: synchronized(this) {
-            INSTANCE ?: PeerDatabaseProvider.get(context).also { INSTANCE = it }
+            INSTANCE ?: PeerDatabaseProvider.get(context, BuildConfig.DEBUG).also { INSTANCE = it }
         }
     }
 }

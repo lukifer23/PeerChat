@@ -19,17 +19,17 @@ object SecureDatabaseProvider {
     /**
      * Get or create encrypted database instance
      */
-    fun getDatabase(context: Context): PeerDatabase {
+    fun getDatabase(context: Context, isDebug: Boolean = false): PeerDatabase {
         // Initialize SQLCipher
         SQLiteDatabase.loadLibs(context)
 
         // Get encryption key from secure storage
-        val encryptionKey = getOrCreateEncryptionKey(context)
+        val encryptionKey = getOrCreateEncryptionKey(context, isDebug)
 
         // Create encrypted database factory
         val factory = SupportFactory(encryptionKey)
 
-        return Room.databaseBuilder(
+        val builder = Room.databaseBuilder(
             context.applicationContext,
             PeerDatabase::class.java,
             DATABASE_NAME
@@ -38,16 +38,22 @@ object SecureDatabaseProvider {
         .addMigrations(
             PeerDatabaseMigrations.MIGRATION_1_2,
             PeerDatabaseMigrations.MIGRATION_2_3,
-            PeerDatabaseMigrations.MIGRATION_3_4
+            PeerDatabaseMigrations.MIGRATION_3_4,
+            PeerDatabaseMigrations.MIGRATION_4_5,
+            PeerDatabaseMigrations.MIGRATION_5_6
         )
-        .fallbackToDestructiveMigration() // Last resort for development
-        .build()
+
+        if (isDebug) {
+            builder.fallbackToDestructiveMigration()
+        }
+
+        return builder.build()
     }
 
     /**
      * Get or create database encryption key using Android Keystore
      */
-    private fun getOrCreateEncryptionKey(context: Context): ByteArray {
+    private fun getOrCreateEncryptionKey(context: Context, isDebug: Boolean = false): ByteArray {
         return try {
             // Try to get existing key from encrypted shared preferences
             val masterKey = MasterKey.Builder(context)
@@ -75,8 +81,12 @@ object SecureDatabaseProvider {
                 newKey
             }
         } catch (e: Exception) {
-            // Fallback: generate a key based on device ID (less secure but better than no encryption)
-            android.util.Log.w("SecureDatabaseProvider", "Failed to use keystore, using fallback key", e)
+            // In release, do not fall back to device-derived keys
+            if (!isDebug) {
+                throw IllegalStateException("Keystore unavailable; cannot initialize encrypted database", e)
+            }
+            // Debug fallback: generate a key based on device properties (development only)
+            android.util.Log.w("SecureDatabaseProvider", "Keystore failed; using debug-only fallback key", e)
             generateFallbackKey(context)
         }
     }

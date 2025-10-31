@@ -20,6 +20,12 @@ object ModelDownloadManager {
 
     fun enqueue(context: Context, model: DefaultModel) {
         val workName = workName(model)
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .setRequiresBatteryNotLow(false) // Allow downloads even on low battery
+            .setRequiresStorageNotLow(true) // Require sufficient storage
+            .build()
+            
         val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
             .setInputData(
                 workDataOf(
@@ -28,6 +34,12 @@ object ModelDownloadManager {
                     ModelDownloadWorker.KEY_IS_DEFAULT to model.isDefault,
                     ModelDownloadWorker.KEY_SHA256 to (model.sha256 ?: ""),
                 )
+            )
+            .setConstraints(constraints)
+            .setBackoffCriteria(
+                androidx.work.BackoffPolicy.EXPONENTIAL,
+                10000L, // 10 seconds minimum backoff
+                TimeUnit.MILLISECONDS
             )
             .build()
         WorkManager.getInstance(context)
@@ -44,10 +56,17 @@ object ModelDownloadManager {
     fun scheduleMaintenance(context: Context) {
         val constraints = Constraints.Builder()
             .setRequiresBatteryNotLow(true)
+            .setRequiresStorageNotLow(true)
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
             .build()
 
         val request = PeriodicWorkRequestBuilder<ModelMaintenanceWorker>(12, TimeUnit.HOURS)
             .setConstraints(constraints)
+            .setBackoffCriteria(
+                androidx.work.BackoffPolicy.EXPONENTIAL,
+                10000L, // 10 seconds minimum backoff
+                TimeUnit.MILLISECONDS
+            )
             .build()
 
         WorkManager.getInstance(context)

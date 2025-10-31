@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.viewModelScope
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.util.Logger
 import com.peerchat.app.engine.DocumentService
 import com.peerchat.app.engine.ModelConfigStore
 import com.peerchat.app.engine.ModelHealthChecker
@@ -251,9 +252,26 @@ class HomeViewModel @Inject constructor(
                 updateModelState {
                     it.copy(
                         manifests = manifests,
+                        activeManifestId = activeManifest?.id,
                         detectedTemplateId = detectedTemplate
                     )
                 }
+            }
+        }
+        // Also observe active manifest changes from repository
+        viewModelScope.launch {
+            while (isActive) {
+                val activeManifest = withContext(Dispatchers.IO) {
+                    modelRepository.getActiveManifest()
+                }
+                updateModelState {
+                    if (it.activeManifestId != activeManifest?.id) {
+                        it.copy(activeManifestId = activeManifest?.id)
+                    } else {
+                        it
+                    }
+                }
+                delay(2000) // Check every 2 seconds
             }
         }
     }
@@ -510,6 +528,9 @@ class HomeViewModel @Inject constructor(
 
     fun updateGpuText(value: String) = updateModelState { it.copy(gpuText = value) }
 
+    fun updateUseGpuMode(useGpuMode: Boolean) =
+        updateModelState { it.copy(useGpuMode = useGpuMode) }
+
     fun updateUseVulkan(useVulkan: Boolean) =
         updateModelState { it.copy(useVulkan = useVulkan) }
 
@@ -552,7 +573,8 @@ class HomeViewModel @Inject constructor(
                     modelPath = "",
                     threadText = "6",
                     contextText = "4096",
-                    gpuText = "20"
+                    gpuText = "20",
+                    activeManifestId = null
                 )
             }
             if (message.isNotBlank()) emitToast(message, false)
@@ -561,10 +583,16 @@ class HomeViewModel @Inject constructor(
 
     fun activateManifest(manifest: ModelManifest) {
         viewModelScope.launch {
-            updateModelState { it.copy(importingModel = true, modelPath = manifest.filePath) }
+            updateModelState { 
+                it.copy(
+                    importingModel = true, 
+                    modelPath = manifest.filePath,
+                    activeManifestId = manifest.id
+                ) 
+            }
             val result = runCatching { modelRepository.activateManifest(manifest) }
                 .getOrElse {
-                    updateModelState { state -> state.copy(importingModel = false) }
+                    updateModelState { state -> state.copy(importingModel = false, activeManifestId = null) }
                     emitToast("Failed to activate model: ${it.message}", true)
                     return@launch
                 }
@@ -572,9 +600,13 @@ class HomeViewModel @Inject constructor(
             when (result) {
                 is OperationResult.Success -> {
                     refreshStoredConfig()
+                    updateModelState { it.copy(activeManifestId = manifest.id) }
                     emitToast("Model loaded: ${result.data.name}", false)
                 }
-                is OperationResult.Failure -> emitToast(result.error, true)
+                is OperationResult.Failure -> {
+                    updateModelState { it.copy(activeManifestId = null) }
+                    emitToast(result.error, true)
+                }
             }
 
             updateModelState { it.copy(importingModel = false) }
@@ -636,12 +668,11 @@ class HomeViewModel @Inject constructor(
             when (result) {
                 is OperationResult.Success -> {
                     refreshStoredConfig()
-                    emitToast(result.message, false)
-
-                    // Mark as recently used for intelligent preloading
                     result.data?.let { manifest ->
+                        updateModelState { it.copy(activeManifestId = manifest.id) }
                         modelService.markRecentlyUsed(manifest)
                     }
+                    emitToast(result.message, false)
                 }
                 is OperationResult.Failure -> {
                     emitToast(result.error, true)
@@ -658,6 +689,9 @@ class HomeViewModel @Inject constructor(
     private fun refreshStoredConfig() {
         val stored = ModelConfigStore.load(appContext)
         if (stored != null) {
+            val activeManifest = uiState.value.model.manifests.firstOrNull { 
+                it.filePath == stored.modelPath 
+            }
             updateModelState {
                 it.copy(
                     storedConfig = stored,
@@ -665,7 +699,8 @@ class HomeViewModel @Inject constructor(
                     threadText = stored.threads.toString(),
                     contextText = stored.contextLength.toString(),
                     gpuText = stored.gpuLayers.toString(),
-                    useVulkan = stored.useVulkan
+                    useVulkan = stored.useVulkan,
+                    activeManifestId = activeManifest?.id
                 )
             }
         } else {
@@ -675,7 +710,8 @@ class HomeViewModel @Inject constructor(
                     modelPath = "",
                     threadText = "6",
                     contextText = "4096",
-                    gpuText = "20"
+                    gpuText = "20",
+                    activeManifestId = null
                 )
             }
         }
@@ -707,13 +743,28 @@ class HomeViewModel @Inject constructor(
             return null
         }
         if (context == null || context <= 0) {
-            emitToast("Invalid context length", true)
+            emitToast("Invalid context length: $context (must be > 0)", true)
+            Logger.w("Invalid context length parsed", mapOf(
+                "contextText" to state.contextText,
+                "contextValue" to context
+            ))
             return null
         }
         if (gpu == null || gpu < 0) {
             emitToast("Invalid GPU layer count", true)
             return null
         }
+
+        // For CPU mode, force GPU layers to 0
+        // For GPU mode, limit to reasonable values to prevent crashes
+        val finalGpuLayers = when {
+            !state.useGpuMode -> 0
+            gpu > 35 -> 35 // Cap at 35 layers to prevent memory issues
+            else -> gpu
+        }
+
+        // Safety check: ensure context length is reasonable
+        val finalContextLength = if (context <= 0) 2048 else context
         if (!File(path).exists()) {
             emitToast("Model file not found", true)
             return null
@@ -721,8 +772,8 @@ class HomeViewModel @Inject constructor(
         return StoredEngineConfig(
             modelPath = path,
             threads = threads,
-            contextLength = context,
-            gpuLayers = gpu,
+            contextLength = finalContextLength,
+            gpuLayers = finalGpuLayers,
             useVulkan = state.useVulkan
         )
     }

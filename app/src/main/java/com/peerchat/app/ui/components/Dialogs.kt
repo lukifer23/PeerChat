@@ -1,5 +1,6 @@
 package com.peerchat.app.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +17,7 @@ import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -44,6 +46,8 @@ import com.peerchat.app.ui.TemplateOption
 import com.peerchat.engine.EngineRuntime
 import com.peerchat.templates.TemplateCatalog
 import com.peerchat.app.util.FormatUtils.formatBytes
+import com.peerchat.app.ui.components.LinearProgressWithLabel
+import com.peerchat.app.ui.components.InlineLoadingIndicator
 import java.io.File
 import java.util.Locale
 
@@ -61,6 +65,7 @@ fun SettingsDialog(
     onThreadChange: (String) -> Unit,
     onContextChange: (String) -> Unit,
     onGpuChange: (String) -> Unit,
+    onUseGpuModeChange: (Boolean) -> Unit,
     onUseVulkanChange: (Boolean) -> Unit,
     onLoadModel: () -> Unit,
     onUnloadModel: () -> Unit,
@@ -128,11 +133,45 @@ fun SettingsDialog(
                 HorizontalDivider()
                 Text("Engine", style = MaterialTheme.typography.titleMedium)
                 StatusRow(status = modelState.engineStatus, metrics = modelState.engineMetrics)
-                if (modelState.importingModel) {
-                    InlineLoadingIndicator(
-                        message = "Applying model configuration…",
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                
+                // Show loading progress if model is loading
+                if (modelState.isLoadingModel || modelState.importingModel) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (modelState.loadProgress != null) {
+                            LinearProgressWithLabel(
+                                progress = modelState.loadProgress.progress.coerceIn(0f, 1f),
+                                label = modelState.loadProgress.message,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "Stage: ${modelState.loadProgress.stage.name}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            InlineLoadingIndicator(
+                                message = if (modelState.importingModel) "Applying model configuration…" else "Loading model…",
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+                
+                // Show preload status if available
+                if (modelState.preloadStatuses.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Preload Status: ${modelState.preloadStats.preloadedModels}/${modelState.preloadStats.maxPreloadedModels} models",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 OutlinedTextField(
                     value = modelState.modelPath,
@@ -143,6 +182,40 @@ fun SettingsDialog(
                 )
                 NumericField("Threads", modelState.threadText, onThreadChange)
                 NumericField("Context", modelState.contextText, onContextChange)
+
+                // CPU/GPU Mode Selection
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Inference Mode", style = MaterialTheme.typography.bodyMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { onUseGpuModeChange(false) }
+                        ) {
+                            RadioButton(
+                                selected = !modelState.useGpuMode,
+                                onClick = { onUseGpuModeChange(false) },
+                                enabled = !modelState.importingModel
+                            )
+                            Text("CPU Only", style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { onUseGpuModeChange(true) }
+                        ) {
+                            RadioButton(
+                                selected = modelState.useGpuMode,
+                                onClick = { onUseGpuModeChange(true) },
+                                enabled = !modelState.importingModel
+                            )
+                            Text("GPU Accelerated", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+
                 NumericField("GPU Layers", modelState.gpuText, onGpuChange)
                 Row(
                     modifier = Modifier.fillMaxWidth(),

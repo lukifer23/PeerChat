@@ -1,6 +1,7 @@
 package com.peerchat.app.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -9,19 +10,32 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineExceptionHandler
 
 /**
- * Global error boundary that catches and displays errors gracefully
+ * Global error boundary wrapper.
+ * 
+ * LIMITATION: Compose does not support try-catch around composables at runtime.
+ * This component is a pass-through that documents the error handling strategy.
+ * 
+ * Error handling is implemented in ViewModels using BaseViewModel patterns:
+ * - BaseViewModel.executeOperation() for automatic error handling
+ * - BaseViewModel.executeWithRetry() for retry logic
+ * - AsyncContent composable for error state UI
+ * 
+ * Uncaught coroutine exceptions should be handled via CoroutineExceptionHandler
+ * in the ViewModel scope, not in composables.
  */
 @Composable
 fun ErrorBoundary(
@@ -31,9 +45,8 @@ fun ErrorBoundary(
     },
     content: @Composable () -> Unit
 ) {
-    // Note: Try-catch around composables is not supported in Compose
-    // This is a simplified error boundary for demonstration
-    // In production, use proper error handling in ViewModels and effects
+    // Pass through content - errors are handled in ViewModels
+    // This wrapper exists for API consistency and documentation
     content()
 }
 
@@ -118,7 +131,7 @@ fun ErrorDialog(
  */
 class ErrorHandler(
     private val onError: (Throwable) -> Unit
-) : AbstractCoroutineContextElement(CoroutineExceptionHandler), CoroutineExceptionHandler {
+) : AbstractCoroutineContextElement(CoroutineExceptionHandler.Key), CoroutineExceptionHandler {
 
     override fun handleException(context: CoroutineContext, exception: Throwable) {
         onError(exception)

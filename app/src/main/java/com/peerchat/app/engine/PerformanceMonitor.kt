@@ -52,14 +52,19 @@ class PerformanceMonitor(private val context: Context) {
         LOW, MEDIUM, HIGH, CRITICAL
     }
 
-    private val scope = CoroutineScope(Dispatchers.Default + Job())
+    private val job = Job()
+    private val scope = CoroutineScope(Dispatchers.Default + job)
     private val snapshots = ConcurrentHashMap<Long, PerformanceSnapshot>()
     private val alerts = mutableListOf<PerformanceAlert>()
-    private val monitoringJob: Job? = null
+    private var monitoringJob: Job? = null
 
     private var baselineSnapshot: PerformanceSnapshot? = null
     private var lastGcCount: Long = 0
     private var lastGcTime: Long = 0
+    
+    // Bounds for memory management
+    private val maxSnapshots = 300 // ~25 minutes at 5s interval
+    private val maxAlerts = 100
 
     /**
      * Start continuous performance monitoring
@@ -69,7 +74,7 @@ class PerformanceMonitor(private val context: Context) {
 
         Logger.i("PerformanceMonitor: starting monitoring", mapOf("intervalMs" to intervalMs))
 
-        scope.launch {
+        monitoringJob = scope.launch {
             // Take baseline snapshot
             baselineSnapshot = takeSnapshot()
             lastGcCount = baselineSnapshot?.gcCount ?: 0
@@ -85,9 +90,16 @@ class PerformanceMonitor(private val context: Context) {
                     // Analyze for issues
                     analyzeSnapshot(snapshot)
 
-                    // Keep only recent snapshots (last 5 minutes)
+                    // Keep only recent snapshots (bounded by count and time)
                     val cutoffTime = System.currentTimeMillis() - 300_000
-                    snapshots.entries.removeIf { it.key < cutoffTime }
+                    val removed = snapshots.entries.removeIf { it.key < cutoffTime }
+                    
+                    // Also enforce max count limit
+                    if (snapshots.size > maxSnapshots) {
+                        val sorted = snapshots.entries.sortedBy { it.key }
+                        val toRemove = sorted.take(snapshots.size - maxSnapshots)
+                        toRemove.forEach { snapshots.remove(it.key) }
+                    }
 
                     delay(intervalMs)
                 } catch (e: Exception) {
@@ -103,6 +115,7 @@ class PerformanceMonitor(private val context: Context) {
      */
     fun stopMonitoring() {
         monitoringJob?.cancel()
+        monitoringJob = null
         Logger.i("PerformanceMonitor: monitoring stopped")
     }
 
@@ -118,8 +131,9 @@ class PerformanceMonitor(private val context: Context) {
         val gcCount = Debug.getRuntimeStat("art.gc.gc-count")?.toLongOrNull() ?: 0
         val gcTime = Debug.getRuntimeStat("art.gc.gc-time")?.toLongOrNull() ?: 0
 
+        // Count application threads more accurately (exclude system threads)
         val threadGroup = Thread.currentThread().threadGroup
-        val activeThreads = threadGroup?.activeCount() ?: 0
+        val applicationThreads = countApplicationThreads(threadGroup)
 
         return PerformanceSnapshot(
             timestamp = timestamp,
@@ -131,9 +145,41 @@ class PerformanceMonitor(private val context: Context) {
             gcCount = gcCount,
             gcTime = gcTime,
             cpuTimeNs = Debug.threadCpuTimeNanos(),
-            threadCount = Thread.activeCount(),
-            activeThreads = activeThreads
+            threadCount = applicationThreads,
+            activeThreads = applicationThreads
         )
+    }
+
+    /**
+     * Count application threads, excluding system threads like GC, JIT, etc.
+     */
+    private fun countApplicationThreads(threadGroup: ThreadGroup?): Int {
+        if (threadGroup == null) return 0
+
+        try {
+            val threads = arrayOfNulls<Thread>(threadGroup.activeCount() * 2)
+            val count = threadGroup.enumerate(threads, false)
+
+            // Filter out system threads (GC, JIT, Finalizer, Reference Handler, etc.)
+            val systemThreadPrefixes = setOf(
+                "GC", "JIT", "Finalizer", "Reference Handler", "Signal Catcher",
+                "JDWP", "HeapTaskDaemon", "GCDaemon", "Timer-", "Attach Listener",
+                "ProcessStats", "Profile Saver", "Compiler", "Binder_",
+                "AsyncTask #", "Thread-", "pool-", "OkHttp", "RxComputation",
+                "RxIo", "RxNew", "RxCached", "kotlinx.coroutines"
+            )
+
+            return threads.take(count).count { thread ->
+                thread != null &&
+                thread.name.let { name ->
+                    !systemThreadPrefixes.any { prefix -> name.startsWith(prefix) }
+                }
+            }
+        } catch (e: Exception) {
+            // Fallback to total active count if enumeration fails
+            Logger.w("PerformanceMonitor: failed to count application threads", mapOf("error" to e.message), e)
+            return threadGroup.activeCount()
+        }
     }
 
     /**
@@ -185,9 +231,11 @@ class PerformanceMonitor(private val context: Context) {
         val alert = PerformanceAlert(type, severity, message, timestamp, context)
         alerts.add(alert)
 
-        // Keep only recent alerts (last 100)
-        if (alerts.size > 100) {
-            alerts.removeAt(0)
+        // Keep only recent alerts (bounded)
+        synchronized(alerts) {
+            if (alerts.size >= maxAlerts) {
+                alerts.removeAt(0)
+            }
         }
 
         Logger.w("PerformanceMonitor: ALERT ${severity.name} - ${type.name}", mapOf(
@@ -281,8 +329,10 @@ class PerformanceMonitor(private val context: Context) {
      */
     fun shutdown() {
         stopMonitoring()
+        job.cancel() // Cancel the entire scope to prevent leaks
         snapshots.clear()
         alerts.clear()
+        baselineSnapshot = null
         Logger.i("PerformanceMonitor: shutdown complete")
     }
 

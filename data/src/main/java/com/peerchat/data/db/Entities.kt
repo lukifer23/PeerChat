@@ -284,6 +284,7 @@ data class BenchmarkResult(
     val memoryUsageMB: Long = 0L, // Peak memory usage during benchmark
     val gcCount: Int = 0, // Number of GC events during benchmark
     val threadCpuTimeNs: Long = 0L, // CPU time spent on benchmark thread
+    val gpuMode: Boolean = true, // true = GPU accelerated, false = CPU only
     val errorMessage: String?, // Null if successful
     val runAt: Long,
     val deviceInfo: String, // Device/hardware info

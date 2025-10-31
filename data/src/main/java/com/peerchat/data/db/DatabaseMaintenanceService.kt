@@ -16,9 +16,9 @@ object DatabaseMaintenanceService {
     /**
      * Comprehensive database maintenance operation
      */
-    suspend fun performMaintenance(context: Context): MaintenanceResult {
+    suspend fun performMaintenance(context: Context, isDebug: Boolean = false): MaintenanceResult {
         return withContext(Dispatchers.IO) {
-            val database = PeerDatabaseProvider.get(context)
+            val database = PeerDatabaseProvider.get(context, isDebug)
 
             try {
                 database.withTransaction {

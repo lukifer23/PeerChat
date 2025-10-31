@@ -1,5 +1,6 @@
 package com.peerchat.app.data
 
+import com.peerchat.app.BuildConfig
 import com.peerchat.data.db.Chat
 import com.peerchat.data.db.Document
 import com.peerchat.data.db.Folder
@@ -246,7 +247,7 @@ class PeerChatRepository(private val database: PeerDatabase) {
 
     companion object {
         fun from(context: android.content.Context): PeerChatRepository =
-            PeerChatRepository(PeerDatabaseProvider.get(context))
+            PeerChatRepository(PeerDatabaseProvider.get(context, BuildConfig.DEBUG))
     }
 
     suspend fun renameFolderResult(folderId: Long, newName: String): OperationResult<Unit> = withContext(Dispatchers.IO) {

@@ -15,12 +15,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -34,8 +36,11 @@ import com.peerchat.app.ui.StreamingUiState
 import com.peerchat.app.ui.components.MessageBubble
 import com.peerchat.app.ui.components.PerformanceMetrics
 import com.peerchat.app.ui.components.StreamingMessageBubble
+import com.peerchat.app.ui.components.CopyButton
+import com.peerchat.app.ui.components.extractCodeBlocksWithLanguage
 import com.peerchat.app.ui.theme.LocalSpacing
 import com.peerchat.data.db.Message
+import dev.jeziellago.compose.markdowntext.MarkdownText
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -139,7 +144,33 @@ fun ChatScreen(
                         onDismissRequest = { selectedReasoningMessage = null },
                         confirmButton = { TextButton(onClick = { selectedReasoningMessage = null }) { Text("Close") } },
                         title = { Text("Reasoning Process") },
-                        text = { Text(reasoning) }
+                        text = { 
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(spacing.small)
+                            ) {
+                                MarkdownText(reasoning)
+                                val codeBlocks by remember(reasoning) {
+                                    derivedStateOf { 
+                                        extractCodeBlocksWithLanguage(reasoning) 
+                                    }
+                                }
+                                if (codeBlocks.isNotEmpty()) {
+                                    HorizontalDivider()
+                                    Text(
+                                        "Code blocks in reasoning:",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                    codeBlocks.forEachIndexed { idx, (language, code) ->
+                                        CopyButton(
+                                            text = code,
+                                            label = if (language.isNotBlank()) "Copy $language" else "Copy code #${idx + 1}",
+                                            clipboard = LocalClipboardManager.current
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     )
                 }
             }

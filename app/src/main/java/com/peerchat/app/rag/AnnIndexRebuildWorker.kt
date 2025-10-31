@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.peerchat.app.BuildConfig
 import com.peerchat.app.util.Logger
 import com.peerchat.data.db.PeerDatabaseProvider
 import com.peerchat.rag.RagService
@@ -17,7 +18,7 @@ class AnnIndexRebuildWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            val db = PeerDatabaseProvider.get(applicationContext)
+            val db = PeerDatabaseProvider.get(applicationContext, BuildConfig.DEBUG)
             val snapshot = RagService.rebuildAnnIndex(db)
             AnnIndexStorage.save(applicationContext, snapshot)
             Logger.i("AnnIndexRebuildWorker: rebuild completed")

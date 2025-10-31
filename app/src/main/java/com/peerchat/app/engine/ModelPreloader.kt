@@ -1,5 +1,6 @@
 package com.peerchat.app.engine
 
+import android.app.ActivityManager
 import android.content.Context
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.util.Logger
@@ -14,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.pow
 
 /**
@@ -29,6 +31,7 @@ class ModelPreloader(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val isRunning = AtomicBoolean(false)
     private val activeLoads = AtomicInteger(0)
+    private val lastMemoryCheck = AtomicLong(System.currentTimeMillis())
 
     // Preload queue with priority (lower priority number = higher priority)
     private val preloadQueue = PriorityBlockingQueue<PreloadRequest>(16) { a, b ->
@@ -38,6 +41,9 @@ class ModelPreloader(
     // Track currently preloaded models
     private val preloadedModels = ConcurrentHashMap<String, PreloadedModel>()
     private val recentlyUsedModels = ConcurrentHashMap<String, Long>()
+    
+    // Bounds for memory management
+    private val maxRecentlyUsedModels = 100 // Limit growth of recently used models map
 
     // Progress tracking
     private val _preloadStatus = MutableStateFlow<Map<String, PreloadStatus>>(emptyMap())
@@ -51,7 +57,6 @@ class ModelPreloader(
 
     data class PreloadedModel(
         val manifest: ModelManifest,
-        val config: StoredEngineConfig,
         val preloadedAt: Long,
         val accessCount: Int = 0
     )
@@ -59,7 +64,7 @@ class ModelPreloader(
     sealed class PreloadStatus {
         data object Queued : PreloadStatus()
         data class Loading(val progress: Float = 0f) : PreloadStatus()
-        data class Ready(val config: StoredEngineConfig) : PreloadStatus()
+        data object Ready : PreloadStatus()
         data class Failed(val error: String) : PreloadStatus()
     }
 
@@ -71,6 +76,9 @@ class ModelPreloader(
             scope.launch {
                 processPreloadQueue()
             }
+            scope.launch {
+                monitorMemoryPressure()
+            }
             Logger.i("ModelPreloader: started")
         }
     }
@@ -80,11 +88,19 @@ class ModelPreloader(
      */
     fun stop() {
         if (isRunning.compareAndSet(true, false)) {
+            // Cancel all ongoing operations
             scope.coroutineContext.cancelChildren()
+
+            // Clear all data structures in a thread-safe manner
             preloadQueue.clear()
             preloadedModels.clear()
+            recentlyUsedModels.clear()
             _preloadStatus.value = emptyMap()
-            Logger.i("ModelPreloader: stopped")
+
+            // Reset counters
+            activeLoads.set(0)
+
+            Logger.i("ModelPreloader: stopped and cleaned up")
         }
     }
 
@@ -111,11 +127,19 @@ class ModelPreloader(
      */
     fun markRecentlyUsed(manifest: ModelManifest) {
         val now = System.currentTimeMillis()
-        recentlyUsedModels[manifest.filePath] = now
+        val filePath = manifest.filePath
+        
+        // Clean up old entries if map is getting too large
+        if (recentlyUsedModels.size >= maxRecentlyUsedModels) {
+            val cutoffTime = now - RECENT_USAGE_WINDOW_MS
+            recentlyUsedModels.entries.removeIf { it.value < cutoffTime }
+        }
+        
+        recentlyUsedModels[filePath] = now
 
         // Update access count for preloaded models
-        preloadedModels[manifest.filePath]?.let { preloaded ->
-            preloadedModels[manifest.filePath] = preloaded.copy(
+        preloadedModels[filePath]?.let { preloaded ->
+            preloadedModels[filePath] = preloaded.copy(
                 accessCount = preloaded.accessCount + 1
             )
         }
@@ -150,6 +174,7 @@ class ModelPreloader(
      */
     fun clearAll() {
         preloadedModels.clear()
+        recentlyUsedModels.clear()
         _preloadStatus.value = emptyMap()
         Logger.i("ModelPreloader: cleared all preloaded models")
     }
@@ -220,6 +245,16 @@ class ModelPreloader(
             return false
         }
 
+        // Check memory pressure before preloading
+        val memoryUsage = checkMemoryPressure()
+        if (memoryUsage >= MEMORY_PRESSURE_THRESHOLD) {
+            Logger.d("ModelPreloader: skipping preload due to memory pressure", mapOf(
+                "model" to request.manifest.name,
+                "memoryUsage" to memoryUsage
+            ))
+            return false
+        }
+
         // Don't preload if we're at capacity and this isn't high priority
         if (preloadedModels.size >= maxPreloadedModels && request.priority > 1) {
             return false
@@ -231,6 +266,58 @@ class ModelPreloader(
         }
 
         return true
+    }
+
+    /**
+     * Check current memory pressure
+     */
+    private fun checkMemoryPressure(): Float {
+        return try {
+            val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+            val memInfo = ActivityManager.MemoryInfo()
+            activityManager?.getMemoryInfo(memInfo)
+            val usedMemory = memInfo.totalMem - memInfo.availMem
+            val usageRatio = usedMemory.toDouble() / memInfo.totalMem.toDouble()
+            usageRatio.toFloat()
+        } catch (e: Exception) {
+            Logger.w("ModelPreloader: memory check failed", mapOf("error" to e.message), e)
+            0f
+        }
+    }
+
+    /**
+     * Monitor memory pressure and evict models if needed
+     */
+    private suspend fun monitorMemoryPressure() {
+        while (scope.isActive && isRunning.get()) {
+            try {
+                val now = System.currentTimeMillis()
+                if (now - lastMemoryCheck.get() > MEMORY_CHECK_INTERVAL_MS) {
+                    lastMemoryCheck.set(now)
+                    val memoryUsage = checkMemoryPressure()
+                    
+                    if (memoryUsage >= MEMORY_CRITICAL_THRESHOLD) {
+                        // Critical memory pressure - evict aggressively
+                        Logger.w("ModelPreloader: critical memory pressure detected", mapOf(
+                            "usage" to memoryUsage,
+                            "preloadedModels" to preloadedModels.size
+                        ))
+                        evictAllPreloadedModels()
+                    } else if (memoryUsage >= MEMORY_PRESSURE_THRESHOLD) {
+                        // Memory pressure - evict least recently used
+                        Logger.w("ModelPreloader: memory pressure detected", mapOf(
+                            "usage" to memoryUsage,
+                            "preloadedModels" to preloadedModels.size
+                        ))
+                        evictLeastRecentlyUsed()
+                    }
+                }
+                delay(MEMORY_CHECK_INTERVAL_MS)
+            } catch (e: Exception) {
+                Logger.w("ModelPreloader: error monitoring memory", mapOf("error" to e.message), e)
+                delay(MEMORY_CHECK_INTERVAL_MS)
+            }
+        }
     }
 
     private suspend fun preloadModel(request: PreloadRequest) {
@@ -245,8 +332,7 @@ class ModelPreloader(
 
             updateStatus(statusKey, PreloadStatus.Loading(0f))
 
-            // Create config for preloading (use minimal settings for faster loading)
-            val config = request.config ?: createPreloadConfig(request.manifest)
+            // Config not needed for preloading (just validation)
 
             // Validate first
             val validation = modelRepository.validateModel(modelPath)
@@ -257,28 +343,26 @@ class ModelPreloader(
 
             updateStatus(statusKey, PreloadStatus.Loading(0.3f))
 
-            // Attempt to load (but don't actually activate it)
-            val loadResult = modelRepository.loadModel(config)
+            // Attempt to preload (validate and prepare, but don't actually load)
+            val loadResult = modelRepository.preloadModel(request.manifest)
 
             when (loadResult) {
                 is OperationResult.Success -> {
                     // Store as preloaded
                     val preloaded = PreloadedModel(
                         manifest = request.manifest,
-                        config = config,
                         preloadedAt = System.currentTimeMillis(),
                         accessCount = 0
                     )
 
                     preloadedModels[modelPath] = preloaded
-                    updateStatus(statusKey, PreloadStatus.Ready(config))
+                    updateStatus(statusKey, PreloadStatus.Ready)
 
                     // Evict least recently used if over capacity
                     evictIfOverCapacity()
 
                     Logger.i("ModelPreloader: successfully preloaded", mapOf(
-                        "model" to request.manifest.name,
-                        "config" to config.toString()
+                        "model" to request.manifest.name
                     ))
                 }
                 is OperationResult.Failure -> {
@@ -300,16 +384,6 @@ class ModelPreloader(
         }
     }
 
-    private fun createPreloadConfig(manifest: ModelManifest): StoredEngineConfig {
-        // Use conservative settings for preloading to minimize resource usage
-        return StoredEngineConfig(
-            modelPath = manifest.filePath,
-            threads = 2, // Minimal threads
-            contextLength = minOf(manifest.contextLength, 2048), // Smaller context
-            gpuLayers = 0, // CPU only for preloading
-            useVulkan = false // Disable Vulkan for preloading
-        )
-    }
 
     private fun evictIfOverCapacity() {
         while (preloadedModels.size > maxPreloadedModels) {
@@ -320,11 +394,69 @@ class ModelPreloader(
             val evicted = preloadedModels.remove(oldest.key)
             if (evicted != null) {
                 updateStatus(oldest.key, null)
+                // Unload the model from engine
+                unloadPreloadedModel(oldest.key)
                 Logger.i("ModelPreloader: evicted old model", mapOf(
                     "model" to evicted.manifest.name
                 ))
             }
         }
+    }
+
+    /**
+     * Evict least recently used models (by access count and age)
+     */
+    private fun evictLeastRecentlyUsed() {
+        if (preloadedModels.isEmpty()) return
+
+        // Sort by access count (ascending) then by age (descending)
+        val sorted = preloadedModels.entries.sortedWith(
+            compareBy<Map.Entry<String, PreloadedModel>> { it.value.accessCount }
+                .thenByDescending { it.value.preloadedAt }
+        )
+
+        // Evict bottom 50% of models
+        val toEvict = sorted.take(preloadedModels.size / 2)
+        toEvict.forEach { entry ->
+            val evicted = preloadedModels.remove(entry.key)
+            if (evicted != null) {
+                updateStatus(entry.key, null)
+                unloadPreloadedModel(entry.key)
+                Logger.i("ModelPreloader: evicted LRU model", mapOf(
+                    "model" to evicted.manifest.name,
+                    "accessCount" to evicted.accessCount
+                ))
+            }
+        }
+    }
+
+    /**
+     * Evict all preloaded models under critical memory pressure
+     */
+    private fun evictAllPreloadedModels() {
+        val toEvict = preloadedModels.keys.toList()
+        toEvict.forEach { modelPath ->
+            val evicted = preloadedModels.remove(modelPath)
+            if (evicted != null) {
+                updateStatus(modelPath, null)
+                unloadPreloadedModel(modelPath)
+            }
+        }
+        Logger.i("ModelPreloader: evicted all preloaded models due to critical memory pressure", mapOf(
+            "count" to toEvict.size
+        ))
+    }
+
+    /**
+     * Clean up resources associated with a preloaded model
+     * Note: Preloaded models are just cached configurations, not actually loaded in the engine
+     */
+    private fun unloadPreloadedModel(modelPath: String) {
+        // Preloaded models don't actually load into the engine - they're just cached configs
+        // No actual unloading needed, just log for debugging
+        Logger.d("ModelPreloader: cleaned up preloaded model config", mapOf(
+            "modelPath" to modelPath
+        ))
     }
 
     private suspend fun scheduleIntelligentPreloads() {
@@ -359,13 +491,16 @@ class ModelPreloader(
     }
 
     private fun updateStatus(modelPath: String, status: PreloadStatus?) {
-        val current = _preloadStatus.value.toMutableMap()
-        if (status != null) {
-            current[modelPath] = status
-        } else {
-            current.remove(modelPath)
+        // Thread-safe update of preload status map
+        synchronized(_preloadStatus) {
+            val current = _preloadStatus.value.toMutableMap()
+            if (status != null) {
+                current[modelPath] = status
+            } else {
+                current.remove(modelPath)
+            }
+            _preloadStatus.value = current
         }
-        _preloadStatus.value = current
     }
 
     data class PreloadStats(
@@ -377,7 +512,24 @@ class ModelPreloader(
         val preloadStatuses: Map<String, PreloadStatus>
     )
 
+    /**
+     * Shutdown the preloader and cancel all background operations.
+     */
+    fun shutdown() {
+        Logger.i("ModelPreloader: shutting down")
+        isRunning.set(false)
+        scope.cancel()
+        preloadQueue.clear()
+        preloadedModels.clear()
+        recentlyUsedModels.clear()
+        _preloadStatus.value = emptyMap()
+        Logger.i("ModelPreloader: shutdown complete")
+    }
+
     companion object {
         private const val RECENT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000L // 24 hours
+        private const val MEMORY_CHECK_INTERVAL_MS = 30_000L // 30 seconds
+        private const val MEMORY_PRESSURE_THRESHOLD = 0.75f // 75% memory usage
+        private const val MEMORY_CRITICAL_THRESHOLD = 0.90f // 90% memory usage
     }
 }

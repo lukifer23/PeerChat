@@ -208,18 +208,23 @@ class ModelsViewModel @Inject constructor(
                     stage = "Starting benchmark...",
                     progress = 0.0f,
                     message = "Initializing benchmark tests"
-                )
+                ),
+                results = emptyList()
             )
 
             val result = BenchmarkService.runBenchmark(
                 context = appContext,
                 manifest = manifest
             ) { progress ->
-                _benchmarkState.value = BenchmarkDialogState.Running(
-                    manifest = manifest,
-                    progress = progress,
-                    results = emptyList() // We'll show partial results later if needed
-                )
+                runCatching {
+                    _benchmarkState.value = BenchmarkDialogState.Running(
+                        manifest = manifest,
+                        progress = progress,
+                        results = progress.completedResults
+                    )
+                }.onFailure { e ->
+                    Logger.e("ModelsViewModel: benchmark progress update failed", mapOf("error" to e.message), e)
+                }
             }
 
             when (result) {
@@ -239,6 +244,8 @@ class ModelsViewModel @Inject constructor(
     fun cancelBenchmark() {
         benchmarkJob?.cancel()
         benchmarkJob = null
+        // Ensure native generation is aborted
+        com.peerchat.engine.EngineNative.abort()
         _benchmarkState.value = BenchmarkDialogState.Closed
         emitToast("Benchmark cancelled", false)
     }

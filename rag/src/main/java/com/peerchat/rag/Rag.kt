@@ -89,7 +89,7 @@ private fun countTokensCached(text: String): Int {
 }
 
 // Cached embedding computation to reduce redundant calculations with Android native fallback
-private fun embedCached(texts: Array<String>): Array<FloatArray> {
+private suspend fun embedCached(texts: Array<String>): Array<FloatArray> {
     val results = Array(texts.size) { FloatArray(0) }
     val uncachedTexts = mutableListOf<String>()
     val uncachedIndices = mutableListOf<Int>()
@@ -131,7 +131,7 @@ private fun embedCached(texts: Array<String>): Array<FloatArray> {
 }
 
 // Compute embeddings with multiple fallback strategies
-private fun computeEmbeddingsWithFallback(texts: Array<String>): Array<FloatArray> {
+private suspend fun computeEmbeddingsWithFallback(texts: Array<String>): Array<FloatArray> {
     val engineStatus = EngineRuntime.status.value
 
     // Try llama.cpp embeddings first if model is loaded
@@ -153,28 +153,116 @@ private fun computeEmbeddingsWithFallback(texts: Array<String>): Array<FloatArra
     return tryAndroidNativeEmbeddings(texts)
 }
 
+// Android embedding service instance (set via configureAndroidEmbeddings)
+private var androidEmbeddingService: (suspend (Array<String>) -> Array<FloatArray>)? = null
+
 // Try Android native embeddings as fallback
-private fun tryAndroidNativeEmbeddings(texts: Array<String>): Array<FloatArray> {
-    Log.i("RagService", "Android native embeddings requested but not implemented - returning empty embeddings")
-    // TODO: Implement Android native embeddings properly
-    // For now, just return empty arrays to avoid crashes during development
-    return Array(texts.size) { FloatArray(0) }
+private suspend fun tryAndroidNativeEmbeddings(texts: Array<String>): Array<FloatArray> {
+    val service = androidEmbeddingService
+    return if (service != null) {
+        try {
+            val embeddings = service(texts)
+            // Verify embeddings are valid
+            if (embeddings.isNotEmpty() && embeddings.all { it.isNotEmpty() }) {
+                Log.i("RagService", "Android native embeddings generated successfully: texts=${texts.size}, dim=${embeddings.firstOrNull()?.size ?: 0}")
+                return embeddings
+            } else {
+                Log.w("RagService", "Android native embeddings returned empty or invalid results, using TF-IDF fallback")
+                generateBasicEmbeddings(texts)
+            }
+        } catch (e: Exception) {
+            Log.w("RagService", "Android native embeddings failed: ${e.message}, using TF-IDF fallback")
+            generateBasicEmbeddings(texts)
+        }
+    } else {
+        Log.i("RagService", "Android native embeddings not configured, using TF-IDF fallback")
+        generateBasicEmbeddings(texts)
+    }
 }
 
-// Android native embedding service (to be injected)
-private var androidEmbeddingService: Any? = null
+// Generate basic TF-IDF style embeddings as fallback
+private fun generateBasicEmbeddings(texts: Array<String>): Array<FloatArray> {
+    if (texts.isEmpty()) return emptyArray()
 
-/**
- * Configure Android native embedding service for fallback
- */
-fun configureAndroidEmbeddingService(service: Any) {
-    androidEmbeddingService = service
-    Log.i("RagService", "configured Android embedding service")
+    // Create vocabulary from all texts
+    val allTokens = texts.flatMap { tokenizeBasic(it) }.distinct()
+    val vocabulary = allTokens.withIndex().associate { it.value to it.index }
+
+    // Fixed embedding dimension (must match expected dimension)
+    val dimension = 384 // Common embedding dimension
+
+    return Array(texts.size) { textIndex ->
+        val text = texts[textIndex]
+        val tokens = tokenizeBasic(text)
+
+        // Create basic TF-IDF style embedding
+        val embedding = FloatArray(dimension)
+
+        // Calculate term frequencies
+        val termFreq = mutableMapOf<String, Int>()
+        tokens.forEach { token ->
+            termFreq[token] = termFreq.getOrDefault(token, 0) + 1
+        }
+
+        // Convert to embedding using hash-based projection
+        termFreq.forEach { (token, freq) ->
+            val vocabIndex = vocabulary[token] ?: 0
+            val tf = freq.toFloat() / tokens.size.toFloat()
+
+            // Use multiple hash functions for better distribution
+            for (i in 0 until 8) {
+                val hash = (token.hashCode() + i * 31) % dimension
+                val index = if (hash < 0) hash + dimension else hash
+                val idf = 1.0f / (1.0f + vocabIndex.toFloat() / vocabulary.size.toFloat())
+                embedding[index] = (embedding[index] + tf * idf).coerceIn(-1.0f, 1.0f)
+            }
+        }
+
+        // L2 normalize
+        val norm = sqrt(embedding.map { it * it }.sum().toDouble()).toFloat()
+        if (norm > 0.0f) {
+            for (i in embedding.indices) {
+                embedding[i] /= norm
+            }
+        }
+
+        embedding
+    }
 }
+
+// Basic tokenization for fallback embeddings
+private fun tokenizeBasic(text: String): List<String> {
+    return text.lowercase()
+        .replace(Regex("[^a-zA-Z0-9\\s]"), " ") // Remove punctuation
+        .split(Regex("\\s+"))
+        .filter { it.length > 2 && it.length < 20 } // Filter reasonable word lengths
+        .distinct()
+}
+
 
 object RagService {
 
     data class DocScoreStats(val size: Int, val maxSize: Int)
+
+    /**
+     * Configure Android native embedding service for fallback embeddings.
+     * Call this during app initialization to enable Android native embeddings.
+     * 
+     * @param service Function that generates embeddings for texts. Should return non-empty embeddings
+     *                when available, or empty arrays when unavailable.
+     */
+    fun configureAndroidEmbeddings(service: suspend (Array<String>) -> Array<FloatArray>) {
+        androidEmbeddingService = service
+        Log.i("RagService", "Android native embeddings configured")
+    }
+
+    /**
+     * Clear Android native embedding configuration
+     */
+    fun clearAndroidEmbeddings() {
+        androidEmbeddingService = null
+        Log.i("RagService", "Android native embeddings cleared")
+    }
 
     fun registerAnnIndex(index: (FloatArray, Int) -> List<Long>) {
         EmbeddingIndexRegistry.register(RagEmbeddingIndex { query, topK -> index(query, topK) })
@@ -271,6 +359,7 @@ object RagService {
             )
 
             records.asSequence()
+                .filter { it.vector.size == query.size }
                 .map { record ->
                     val score = cosine(query, record.vector, record.norm)
                     record.id to score
@@ -340,6 +429,11 @@ object RagService {
         if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return emptyList()
 
         val qv = embedCached(arrayOf(query)).firstOrNull() ?: return emptyList()
+        if (qv.isEmpty()) {
+            // No semantic vector available; fall back to lexical-only retrieval
+            val lexicalOnly = db.ragDao().searchChunks(query, limit = topK)
+            return lexicalOnly
+        }
 
         val lexicalMatches = db.ragDao().searchChunks(query, limit = topK * 6) // Get more candidates for better ranking
         val candidateEmbeddings = LinkedHashMap<Long, com.peerchat.data.db.Embedding>()
@@ -371,6 +465,7 @@ object RagService {
         val semanticScores = HashMap<Long, Float>(candidateEmbeddings.size.coerceAtLeast(topK * 2))
         candidateEmbeddings.values.forEach { emb ->
             if (emb.dim <= 0 || emb.vector.isEmpty()) return@forEach
+            if (emb.dim != qv.size) return@forEach
             val v = bytesToFloatArray(emb.vector)
             val similarity = cosine(qv, v, emb.norm)
             semanticScores[emb.id] = similarity

@@ -1,6 +1,7 @@
 package com.peerchat.app.di
 
 import android.content.Context
+import com.peerchat.app.BuildConfig
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.data.db.PeerDatabase
 import com.peerchat.data.db.PeerDatabaseProvider
@@ -18,7 +19,7 @@ object DataModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): PeerDatabase {
-        return PeerDatabaseProvider.get(context)
+        return PeerDatabaseProvider.get(context, BuildConfig.DEBUG)
     }
 
     @Provides
