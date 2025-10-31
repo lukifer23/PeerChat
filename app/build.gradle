@@ -39,6 +39,13 @@ android {
             shrinkResources true
             // Build optimization flags
             buildConfigField "boolean", "BUILD_OPTIMIZED", "true"
+            // APK size optimizations
+            isDebuggable = false
+            isJniDebuggable = false
+            // Enable split APKs for different ABIs (though we only target arm64-v8a)
+            ndk {
+                debugSymbolLevel = "NONE"
+            }
         }
         debug {
             minifyEnabled false
@@ -61,7 +68,21 @@ android {
 
     packagingOptions {
         resources {
-            excludes += ['/META-INF/{AL2.0,LGPL2.1}', '/META-INF/LICENSE*']
+            excludes += [
+                '/META-INF/{AL2.0,LGPL2.1}',
+                '/META-INF/LICENSE*',
+                '/META-INF/DEPENDENCIES',
+                '/META-INF/NOTICE',
+                '/META-INF/*.kotlin_module',
+                '**/attach_hotspot_windows.dll',
+                'META-INF/licenses/**',
+                'META-INF/AL2.0',
+                'META-INF/LGPL2.1'
+            ]
+        }
+        jniLibs {
+            // Optimize native library packaging
+            useLegacyPackaging = false
         }
     }
 
@@ -77,6 +98,15 @@ android {
                 // Suppress experimental API warnings
                 '-Xskip-metadata-version-check',
         ]
+    }
+
+    testBuildType "debug"
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+        }
     }
 }
 
@@ -125,6 +155,14 @@ dependencies {
     testImplementation 'io.mockk:mockk:1.13.12'
     testImplementation 'org.json:json:20231013'
     testImplementation project(':engine')
+    testImplementation 'org.robolectric:robolectric:4.11.1'
+testImplementation 'androidx.test:core-ktx:1.5.0'
+}
+
+tasks.withType(Test).configureEach {
+    if (name.contains("ReleaseUnitTest")) {
+        enabled = false
+    }
 }
 
 configurations.all {

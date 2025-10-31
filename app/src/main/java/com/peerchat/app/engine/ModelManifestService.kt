@@ -16,6 +16,8 @@ class ModelManifestService(
     private val context: Context,
     private val repository: ModelManifestRepository = ModelManifestRepository(context)
 ) {
+    // Cache for file metadata to avoid recomputation
+    private val metadataCache = mutableMapOf<String, Pair<Long, JSONObject>>() // path -> (fileModified, metadata)
 
     fun manifestsFlow(): Flow<List<ModelManifest>> = repository.observeManifests()
 
@@ -32,32 +34,58 @@ class ModelManifestService(
 
         val name = file.nameWithoutExtension
         val existing = repository.getByName(name)
+        val fileModified = file.lastModified()
+        
+        // Use cached metadata if file hasn't changed
+        val cachedMetadata = metadataCache[path]?.takeIf { it.first == fileModified }?.second
+        
         val metaObject = modelMetaJson?.takeIf { it.isNotBlank() }?.let {
             runCatching { JSONObject(it) }.getOrNull()
-        } ?: existing?.metadataJson?.let { runCatching { JSONObject(it) }.getOrNull() }
+        } ?: cachedMetadata ?: existing?.metadataJson?.let { runCatching { JSONObject(it) }.getOrNull() }
 
-        val checksum = computeSha256(file)
+        // Only compute SHA-256 if checksum not in metadata or file changed
+        val checksum = if (existing != null && 
+            existing.checksumSha256.isNotBlank() && 
+            fileModified == (existing.metadataJson.let { 
+                runCatching { JSONObject(it) }.getOrNull()?.optLong("lastScanned") 
+            } ?: 0L)
+        ) {
+            existing.checksumSha256
+        } else {
+            computeSha256(file)
+        }
+        
         val family = extractFamily(metaObject) ?: existing?.family ?: "unknown"
         val contextLen = extractContextLength(metaObject) ?: existing?.contextLength ?: 0
+        
         val metadata = (metaObject ?: JSONObject()).apply {
             put("checksum", checksum)
             put("fileExists", true)
             put("lastScanned", System.currentTimeMillis())
-            val detectionSource = metaObject?.toString()
-                ?: modelMetaJson
-                ?: existing?.metadataJson
-            val modelMetadata = TemplateCatalog.parseMetadata(detectionSource)
-            val detectedTemplate = TemplateCatalog.detect(modelMetadata)
-            put("detectedTemplateId", detectedTemplate)
-            TemplateCatalog.resolve(detectedTemplate)?.let { template ->
-                put("detectedTemplateLabel", template.displayName)
-                put("detectedTemplateStops", template.stopSequences)
+            
+            // Lazy template detection - only if not already detected
+            if (!has("detectedTemplateId") || optString("detectedTemplateId").isBlank()) {
+                val detectionSource = metaObject?.toString()
+                    ?: modelMetaJson
+                    ?: existing?.metadataJson
+                if (detectionSource != null) {
+                    val modelMetadata = TemplateCatalog.parseMetadata(detectionSource)
+                    val detectedTemplate = TemplateCatalog.detect(modelMetadata)
+                    put("detectedTemplateId", detectedTemplate)
+                    TemplateCatalog.resolve(detectedTemplate)?.let { template ->
+                        put("detectedTemplateLabel", template.displayName)
+                        put("detectedTemplateStops", template.stopSequences)
+                    }
+                    modelMetadata.arch?.let { putOpt("arch", it) }
+                    modelMetadata.chatTemplate?.let { putOpt("chatTemplate", it) }
+                    modelMetadata.tokenizerModel?.let { putOpt("tokenizerModel", it) }
+                    modelMetadata.tags?.let { putOpt("tags", it) }
+                }
             }
-            modelMetadata.arch?.let { putOpt("arch", it) }
-            modelMetadata.chatTemplate?.let { putOpt("chatTemplate", it) }
-            modelMetadata.tokenizerModel?.let { putOpt("tokenizerModel", it) }
-            modelMetadata.tags?.let { putOpt("tags", it) }
         }
+        
+        // Cache metadata
+        metadataCache[path] = fileModified to metadata
 
         val manifest = ModelManifest(
             id = existing?.id ?: 0,

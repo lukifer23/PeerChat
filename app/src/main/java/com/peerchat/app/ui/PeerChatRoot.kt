@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.peerchat.app.ui.theme.PeerMotion
 import com.peerchat.app.ui.components.AppToastHost
 import com.peerchat.app.ui.components.ErrorBoundary
 import com.peerchat.app.ui.screens.ChatRouteScreen
@@ -40,7 +41,14 @@ fun PeerChatRoot() {
                     color = MaterialTheme.colorScheme.background,
                     modifier = androidx.compose.ui.Modifier.padding(paddingValues)
                 ) {
-                    NavHost(navController = navController, startDestination = ROUTE_HOME) {
+                    NavHost(
+                        navController = navController,
+                        startDestination = ROUTE_HOME,
+                        enterTransition = { PeerMotion.sharedAxisXIn(true) },
+                        exitTransition = { PeerMotion.sharedAxisXOut(true) },
+                        popEnterTransition = { PeerMotion.sharedAxisXIn(false) },
+                        popExitTransition = { PeerMotion.sharedAxisXOut(false) }
+                    ) {
                         composable(ROUTE_HOME) {
                             HomeScreen(navController = navController)
                         }

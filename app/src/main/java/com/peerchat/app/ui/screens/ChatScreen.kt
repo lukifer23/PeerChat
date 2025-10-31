@@ -1,12 +1,18 @@
 package com.peerchat.app.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -23,38 +29,46 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.Row
+import com.peerchat.app.ui.StreamingUiState
 import com.peerchat.app.ui.components.MessageBubble
 import com.peerchat.app.ui.components.PerformanceMetrics
 import com.peerchat.app.ui.components.StreamingMessageBubble
 import com.peerchat.data.db.Message
-import com.peerchat.engine.EngineMetrics
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     modifier: Modifier = Modifier,
     enabled: Boolean,
     messages: List<Message>,
-    onSend: (String, (String) -> Unit, (String, EngineMetrics) -> Unit) -> Unit,
+    streaming: StreamingUiState,
+    onSend: (String) -> Unit,
 ) {
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
-    var streaming by remember { mutableStateOf(false) }
-    var current by remember { mutableStateOf("Assistant: ") }
-    var metricsState by remember { mutableStateOf<EngineMetrics?>(null) }
     val clipboard = LocalClipboardManager.current
-    var reasoning by remember { mutableStateOf("") }
     var showReasoning by remember { mutableStateOf(false) }
-    var inReasoning by remember { mutableStateOf(false) }
+    val isStreaming = streaming.isStreaming
+    val metricsState = streaming.metrics
+
+    val listState = rememberLazyListState()
 
     Column(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        LazyColumn(Modifier.weight(1f)) {
-            items(messages) { msg ->
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            state = listState
+        ) {
+            items(
+                items = messages,
+                key = { it.id }
+            ) { msg ->
                 MessageBubble(
                     message = msg,
                     showReasoningButton = true,
-                    onReasoningClick = { showReasoning = true }
+                    onReasoningClick = { showReasoning = true },
+                    modifier = Modifier.animateItemPlacement()
                 )
 
                 // Show reasoning dialog if requested
@@ -74,12 +88,18 @@ fun ChatScreen(
                 }
             }
             item {
-                StreamingMessageBubble(
-                    currentText = if (current != "Assistant: ") current else "",
-                    showReasoning = showReasoning,
-                    reasoningText = reasoning,
-                    onShowReasoningChange = { showReasoning = it }
-                )
+                AnimatedVisibility(
+                    visible = streaming.isStreaming || streaming.visibleText.isNotEmpty(),
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut()
+                ) {
+                    StreamingMessageBubble(
+                        currentText = streaming.visibleText,
+                        showReasoning = showReasoning,
+                        reasoningText = streaming.reasoningText,
+                        onShowReasoningChange = { showReasoning = it }
+                    )
+                }
             }
         }
         metricsState?.let { metric ->
@@ -100,36 +120,13 @@ fun ChatScreen(
                 placeholder = { Text("Type a message…") }
             )
             androidx.compose.material3.Button(
-                enabled = enabled && !streaming && input.text.isNotBlank(),
+                enabled = enabled && !isStreaming && input.text.isNotBlank(),
                 onClick = {
                     if (!enabled) return@Button
                     val prompt = input.text
                     input = androidx.compose.ui.text.input.TextFieldValue("")
-                    current = "Assistant: "
-                    metricsState = null
-                    reasoning = ""
-                    inReasoning = false
-                    streaming = true
-                    onSend(prompt, { token ->
-                        val t = token
-                        if (!inReasoning && (t.contains("<think>") || t.contains("<reasoning>") || t.contains("<|startofthink|>"))) {
-                            inReasoning = true
-                        }
-                        if (inReasoning) {
-                            reasoning += t
-                        } else {
-                            current += t
-                        }
-                        if (inReasoning && (t.contains("</think>") || t.contains("</reasoning>") || t.contains("<|endofthink|>"))) {
-                            inReasoning = false
-                        }
-                    }, { _, metrics ->
-                        streaming = false
-                        metricsState = metrics
-                        current = "Assistant: "
-                        reasoning = ""
-                        inReasoning = false
-                    })
+                    showReasoning = false
+                    onSend(prompt)
                 }
             ) { Text("Send") }
         }

@@ -1,6 +1,7 @@
 package com.peerchat.engine
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,7 @@ object EngineRuntime {
     suspend fun load(config: EngineConfig): Boolean = mutex.withLock {
         ensureInitialized()
         _status.value = EngineStatus.Loading(config)
+        
         val success = withContext(Dispatchers.IO) {
             EngineNative.loadModel(
                 config.modelPath,
@@ -40,10 +42,10 @@ object EngineRuntime {
                 config.useVulkan
             )
         }
+        
         if (success) {
             _status.value = EngineStatus.Loaded(config)
             updateMetricsFromNative()
-            // detect and cache model metadata for template autodetection
             val meta = withContext(Dispatchers.IO) {
                 runCatching { EngineNative.detectModel(config.modelPath) }.getOrNull()
             }

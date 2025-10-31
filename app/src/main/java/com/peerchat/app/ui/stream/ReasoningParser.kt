@@ -46,6 +46,15 @@ internal class ReasoningParser(
         }
     }
 
+    fun snapshot(): ReasoningSnapshot {
+        val reasoningText = reasoning.toString()
+        return ReasoningSnapshot(
+            visible = visible.toString(),
+            reasoning = reasoningText,
+            reasoningChars = reasoningContentLength(reasoningText)
+        )
+    }
+
     fun result(): ReasoningParseResult {
         val reasoningText = reasoning.toString()
         val duration = if (reasoningStartNs != null && reasoningEndNs != null) {
@@ -92,4 +101,10 @@ internal data class ReasoningParseResult(
     val reasoning: String,
     val reasoningChars: Int,
     val reasoningDurationMs: Long?
+)
+
+internal data class ReasoningSnapshot(
+    val visible: String,
+    val reasoning: String,
+    val reasoningChars: Int
 )

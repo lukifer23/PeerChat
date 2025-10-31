@@ -6,12 +6,16 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
+import com.peerchat.app.docs.OcrService
 import com.peerchat.data.db.Document
 import com.peerchat.rag.RagService
+import com.peerchat.engine.EngineRuntime
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.security.MessageDigest
+import kotlin.text.Charsets
 
 /**
  * Service for managing document operations including import, indexing, and deletion.
@@ -26,23 +30,47 @@ class DocumentService(
      */
     suspend fun importDocument(uri: Uri): OperationResult<Document> = withContext(Dispatchers.IO) {
         try {
+            val engineStatus = EngineRuntime.status.value
+            if (engineStatus !is EngineRuntime.EngineStatus.Loaded) {
+                return@withContext OperationResult.Failure("Load a model before importing documents")
+            }
+
             val resolver = context.contentResolver
             val mime = resolver.getType(uri) ?: "application/octet-stream"
             val name = resolveDisplayName(resolver, uri) ?: "Document"
-            val text = extractText(resolver, uri, mime)
+            val textResult = extractText(resolver, uri, mime)
+            val text = when (textResult) {
+                is OcrService.OcrResult.Success -> textResult.text
+                is OcrService.OcrResult.Failure -> {
+                    return@withContext OperationResult.Failure(
+                        if (mime.startsWith("image/")) {
+                            textResult.error
+                        } else {
+                            "Text extraction failed: ${textResult.error}"
+                        }
+                    )
+                }
+            }
 
             if (text.isBlank()) {
                 return@withContext OperationResult.Failure("No text content found in document")
             }
+
+            val metadata = JSONObject().apply {
+                put("sourceMime", mime)
+                if (mime.startsWith("image/")) {
+                    put("extraction", "ocr")
+                }
+            }.toString()
 
             val document = Document(
                 uri = uri.toString(),
                 title = name,
                 hash = sha256(text),
                 mime = mime,
-                textBytes = text.toByteArray(),
+                textBytes = text.toByteArray(Charsets.UTF_8),
                 createdAt = System.currentTimeMillis(),
-                metaJson = "{}"
+                metaJson = metadata
             )
 
             val id = repository.upsertDocument(document)
@@ -51,7 +79,12 @@ class DocumentService(
             // Index the document for RAG
             RagService.indexDocument(repository.database(), indexedDocument, text)
 
-            OperationResult.Success(indexedDocument, "Document indexed successfully")
+            val message = if (mime.startsWith("image/")) {
+                "Image processed and indexed"
+            } else {
+                "Document indexed successfully"
+            }
+            OperationResult.Success(indexedDocument, message)
         } catch (e: Exception) {
             OperationResult.Failure("Import error: ${e.message}")
         }
@@ -74,6 +107,10 @@ class DocumentService(
      */
     suspend fun reindexDocument(document: Document): OperationResult<Document> = withContext(Dispatchers.IO) {
         try {
+            val engineStatus = EngineRuntime.status.value
+            if (engineStatus !is EngineRuntime.EngineStatus.Loaded) {
+                return@withContext OperationResult.Failure("Load a model before re-indexing documents")
+            }
             val text = String(document.textBytes)
             RagService.indexDocument(repository.database(), document, text)
             OperationResult.Success(document, "Document re-indexed")
@@ -85,11 +122,26 @@ class DocumentService(
     /**
      * Extract text content from various document types.
      */
-    private fun extractText(resolver: ContentResolver, uri: Uri, mime: String): String {
+    private suspend fun extractText(resolver: ContentResolver, uri: Uri, mime: String): OcrService.OcrResult {
         return when {
-            mime == "application/pdf" -> extractPdfText(resolver, uri)
-            mime.startsWith("text/") -> resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-            else -> ""
+            mime == "application/pdf" -> {
+                val text = extractPdfText(resolver, uri)
+                if (text.isBlank()) {
+                    OcrService.OcrResult.Failure("PDF extraction returned empty text")
+                } else {
+                    OcrService.OcrResult.Success(text)
+                }
+            }
+            mime.startsWith("text/") -> {
+                val text = resolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                if (text.isBlank()) {
+                    OcrService.OcrResult.Failure("Text file is empty or could not be read")
+                } else {
+                    OcrService.OcrResult.Success(text)
+                }
+            }
+            mime.startsWith("image/") -> OcrService.extractText(context, uri)
+            else -> OcrService.OcrResult.Failure("Unsupported file type: $mime")
         }
     }
 

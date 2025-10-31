@@ -113,6 +113,10 @@ class PeerChatRepository(private val database: PeerDatabase) {
         db.folderDao().deleteById(folderId)
     }
 
+    suspend fun renameFolder(folderId: Long, name: String) = withContext(Dispatchers.IO) {
+        database.folderDao().rename(folderId, name, System.currentTimeMillis())
+    }
+
     suspend fun updateChatSettings(chatId: Long, systemPrompt: String?, modelId: String?) = withContext(Dispatchers.IO) {
         val dao = database.chatDao()
         val base = dao.getById(chatId) ?: return@withContext
@@ -226,5 +230,15 @@ class PeerChatRepository(private val database: PeerDatabase) {
     companion object {
         fun from(context: android.content.Context): PeerChatRepository =
             PeerChatRepository(PeerDatabaseProvider.get(context))
+    }
+
+    suspend fun renameFolderResult(folderId: Long, newName: String): OperationResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val trimmed = newName.trim().ifEmpty { "Folder" }
+            renameFolder(folderId, trimmed)
+            OperationResult.Success(Unit, "Folder renamed")
+        } catch (e: Exception) {
+            OperationResult.Failure("Rename error: ${e.message}")
+        }
     }
 }

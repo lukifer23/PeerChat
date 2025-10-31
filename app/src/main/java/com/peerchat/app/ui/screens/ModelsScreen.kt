@@ -1,46 +1,67 @@
 package com.peerchat.app.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.layout.Row
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.peerchat.app.engine.DefaultModels
 import com.peerchat.app.engine.ModelDownloadManager
+import com.peerchat.app.ui.ModelsViewModel
 import com.peerchat.app.ui.components.EmptyListHint
 import com.peerchat.app.ui.components.ModelCatalogRow
+import com.peerchat.app.ui.components.ModelManifestRow
+import com.peerchat.app.ui.components.SectionCard
+import com.peerchat.app.ui.components.openUrl
 import com.peerchat.app.ui.components.rememberDownloadInfo
-import com.peerchat.app.ui.ModelViewModel
+import com.peerchat.app.ui.components.GlobalToastManager
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelsScreen(
     onBack: () -> Unit,
-    viewModel: ModelViewModel = hiltViewModel()
+    viewModel: ModelsViewModel = hiltViewModel()
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> viewModel.import(uri) }
+
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is ModelsViewModel.ModelsEvent.Toast -> {
+                    GlobalToastManager.showToast(event.message, event.isError)
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -48,61 +69,75 @@ fun ModelsScreen(
                 title = { Text("Models") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(androidx.compose.material.icons.Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = {
+                        importLauncher.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*"))
+                    }) {
+                        Text("Import")
                     }
                 }
             )
-        },
-    ) { inner ->
+        }
+    ) { innerPadding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(inner),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                Text("Catalog", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-            }
-            items(DefaultModels.list) { model ->
-                val workInfo = rememberDownloadInfo(model)
-                val manifest = uiState.manifests.firstOrNull {
-                    File(it.filePath).name.equals(model.suggestedFileName, ignoreCase = true)
-                }
-                Column(Modifier.fillMaxWidth()) {
-                    ModelCatalogRow(
-                        model = model,
-                        manifest = manifest,
-                        workInfo = workInfo,
-                        onDownload = { ModelDownloadManager.enqueue(context, model) },
-                        onActivate = manifest?.let { m -> { viewModel.activateManifest(m) } },
-                        onOpenCard = { com.peerchat.app.ui.components.openUrl(context, model.cardUrl) }
-                    )
-                }
-            }
-            item {
-                HorizontalDivider()
-                Text("Installed", style = androidx.compose.material3.MaterialTheme.typography.titleMedium)
-            }
-            if (uiState.manifests.isEmpty()) {
-                item {
-                    when {
-                        uiState.isImporting -> Text("Importing model…")
-                        uiState.isLoading -> Text("Loading model…")
-                        else -> EmptyListHint("No installed models yet.")
+                SectionCard(title = "Installed Models") {
+                    if (uiState.manifests.isEmpty()) {
+                        EmptyListHint("No models installed yet.")
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            uiState.manifests.forEach { manifest ->
+                                val isActive = manifest.id == uiState.activeManifestId
+                                val isBusy = manifest.id == uiState.activatingId ||
+                                    manifest.id in uiState.verifyingIds ||
+                                    manifest.id in uiState.deletingIds
+                                ModelManifestRow(
+                                    manifest = manifest,
+                                    isActive = isActive,
+                                    isBusy = isBusy,
+                                    onLoad = { viewModel.activate(manifest) },
+                                    onVerify = { viewModel.verify(manifest) },
+                                    onDelete = { viewModel.delete(manifest, removeFile = false) }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = { importLauncher.launch(arrayOf("application/octet-stream", "application/x-gguf", "*/*")) },
+                        enabled = !uiState.importInProgress,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (uiState.importInProgress) "Importing…" else "Import from file")
                     }
                 }
-            } else {
-                items(uiState.manifests) { manifest ->
-                    Column(Modifier.fillMaxWidth()) {
-                        Text(manifest.name, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium)
-                        Text(
-                            manifest.filePath,
-                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { viewModel.activateManifest(manifest) }) { Text("Activate") }
-                            TextButton(onClick = { viewModel.verifyManifest(manifest) }) { Text("Verify") }
-                            TextButton(onClick = { viewModel.deleteManifest(manifest, removeFile = true) }) { Text("Delete") }
+            }
+
+            item {
+                SectionCard(title = "Default Catalog") {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DefaultModels.list.forEach { defaultModel ->
+                            val manifest = uiState.manifests.firstOrNull { manifest ->
+                                File(manifest.filePath).name.equals(defaultModel.suggestedFileName, ignoreCase = true)
+                            }
+                            val workInfo = rememberDownloadInfo(defaultModel)
+                            ModelCatalogRow(
+                                model = defaultModel,
+                                manifest = manifest,
+                                workInfo = workInfo,
+                                onDownload = { ModelDownloadManager.enqueue(context, defaultModel) },
+                                onActivate = manifest?.let { { viewModel.activate(it) } },
+                                onOpenCard = { openUrl(context, defaultModel.cardUrl) }
+                            )
                         }
                     }
                 }

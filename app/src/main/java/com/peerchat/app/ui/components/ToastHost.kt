@@ -1,5 +1,8 @@
 package com.peerchat.app.ui.components
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -13,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.peerchat.app.ui.theme.PeerMotion
 import kotlinx.coroutines.delay
 
 /**
@@ -24,7 +28,7 @@ fun AppToastHost(
     modifier: Modifier = Modifier
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
-    val toastState by remember { mutableStateOf(toastManager.toastState) }
+    val toastState = toastManager.toastState
 
     LaunchedEffect(toastState) {
         toastState?.let { state ->
@@ -48,10 +52,16 @@ fun AppToastHost(
         hostState = snackbarHostState,
         modifier = modifier.padding(16.dp)
     ) { snackbarData ->
-        Snackbar(
-            snackbarData = snackbarData,
-            actionColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
-        )
+        AnimatedVisibility(
+            visible = snackbarData.visuals.message.isNotEmpty(),
+            enter = PeerMotion.toastEnter(),
+            exit = PeerMotion.toastExit()
+        ) {
+            Snackbar(
+                snackbarData = snackbarData,
+                actionColor = androidx.compose.material3.MaterialTheme.colorScheme.primary
+            )
+        }
     }
 }
 

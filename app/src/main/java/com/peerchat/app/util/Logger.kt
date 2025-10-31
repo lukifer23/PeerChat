@@ -43,10 +43,49 @@ object Logger {
     }
 
     private fun format(message: String, fields: Map<String, Any?>): String {
-        if (fields.isEmpty()) return message
+        if (fields.isEmpty()) return redactSensitiveData(message)
         val obj = JSONObject()
-        for ((k, v) in fields) obj.put(k, v)
-        return "$message | ${obj.toString()}"
+        for ((k, v) in fields) {
+            // Redact sensitive fields
+            val value = if (k.contains("path", ignoreCase = true) || 
+                            k.contains("uri", ignoreCase = true) ||
+                            k.contains("token", ignoreCase = true) ||
+                            k.contains("password", ignoreCase = true) ||
+                            k.contains("secret", ignoreCase = true) ||
+                            k.contains("key", ignoreCase = true)) {
+                redactValue(v?.toString() ?: "null")
+            } else {
+                v
+            }
+            obj.put(k, value)
+        }
+        return "${redactSensitiveData(message)} | ${obj.toString()}"
+    }
+    
+    /**
+     * Redacts sensitive data from log messages.
+     * Removes file paths, URIs, and other potentially sensitive information.
+     */
+    private fun redactSensitiveData(message: String): String {
+        return message
+            .replace(Regex("/[\\w/.-]+/[\\w.-]+\\.gguf"), "[MODEL_FILE]")
+            .replace(Regex("file://[^\\s]+"), "[FILE_URI]")
+            .replace(Regex("content://[^\\s]+"), "[CONTENT_URI]")
+            .replace(Regex("/data/[^\\s]+"), "[APP_DATA]")
+            .replace(Regex("\\b[A-Za-z0-9]{32,}\\b"), "[HASH]") // Redact long alphanumeric strings (potential hashes)
+    }
+    
+    /**
+     * Redacts sensitive values while preserving structure.
+     */
+    private fun redactValue(value: String): String {
+        if (value.length > 100) {
+            return "[LONG_VALUE_${value.length}_CHARS]"
+        }
+        if (value.contains("/") || value.contains("://")) {
+            return "[PATH_OR_URI]"
+        }
+        return "[REDACTED]"
     }
 }
 

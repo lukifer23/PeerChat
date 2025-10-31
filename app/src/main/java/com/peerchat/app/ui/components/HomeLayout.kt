@@ -1,157 +1,126 @@
 package com.peerchat.app.ui.components
 
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavHostController
 import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.HomeViewModel
-import com.peerchat.app.ui.screens.ChatScreen
+import com.peerchat.app.ui.SearchResultItem
+import com.peerchat.app.ui.SearchResultItem.ResultType
 
 /**
- * Main home screen layout that adapts to screen size
+ * Home layout focuses on navigation (folders & chats) with adaptive column/row presentation.
  */
 @Composable
 fun AdaptiveHomeLayout(
     navController: NavHostController,
     uiState: HomeUiState,
-    viewModel: HomeViewModel,
-    tempName: androidx.compose.ui.text.input.TextFieldValue,
-    onTempNameChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
+    homeViewModel: HomeViewModel,
     modifier: Modifier = Modifier
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val isCompact = maxWidth < 720.dp
 
         if (isCompact) {
-            CompactHomeLayout(
-                navController = navController,
-                uiState = uiState,
-                viewModel = viewModel,
-                tempName = tempName,
-                onTempNameChange = onTempNameChange
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                HomeStatusSection(
+                    navController = navController,
+                    uiState = uiState,
+                    homeViewModel = homeViewModel
+                )
+                FoldersSection(
+                    uiState = uiState,
+                    homeViewModel = homeViewModel
+                )
+                ChatsSection(
+                    uiState = uiState,
+                    homeViewModel = homeViewModel,
+                    onOpenChat = { chatId, folderId ->
+                        homeViewModel.focusChat(chatId, folderId)
+                        navController.navigate("chat/$chatId") {
+                            launchSingleTop = true
+                        }
+                    }
+                )
+            }
         } else {
-            WideHomeLayout(
-                navController = navController,
-                uiState = uiState,
-                viewModel = viewModel,
-                tempName = tempName,
-                onTempNameChange = onTempNameChange
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                HomeStatusSection(
+                    navController = navController,
+                    uiState = uiState,
+                    homeViewModel = homeViewModel
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    FoldersSection(
+                        uiState = uiState,
+                        homeViewModel = homeViewModel,
+                        modifier = Modifier
+                            .weight(1f)
+                            .widthIn(max = 360.dp)
+                    )
+                    ChatsSection(
+                        uiState = uiState,
+                        homeViewModel = homeViewModel,
+                        modifier = Modifier.weight(2f),
+                        onOpenChat = { chatId, folderId ->
+                            homeViewModel.focusChat(chatId, folderId)
+                            navController.navigate("chat/$chatId") {
+                                launchSingleTop = true
+                            }
+                        }
+                    )
+                }
+            }
         }
     }
 }
 
-/**
- * Compact layout for small screens (stacked vertically)
- */
-@Composable
-private fun CompactHomeLayout(
-    navController: NavHostController,
-    uiState: HomeUiState,
-    viewModel: HomeViewModel,
-    tempName: androidx.compose.ui.text.input.TextFieldValue,
-    onTempNameChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Status and search (common to both layouts)
-        HomeStatusSection(uiState = uiState, viewModel = viewModel)
-
-        // Chat area takes up significant space
-        ChatSection(
-            uiState = uiState,
-            viewModel = viewModel,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 260.dp)
-        )
-
-        // Navigation sections below
-        NavigationSections(
-            uiState = uiState,
-            viewModel = viewModel,
-            tempName = tempName,
-            onTempNameChange = onTempNameChange
-        )
-    }
-}
-
-/**
- * Wide layout for large screens (side-by-side)
- */
-@Composable
-private fun WideHomeLayout(
-    navController: NavHostController,
-    uiState: HomeUiState,
-    viewModel: HomeViewModel,
-    tempName: androidx.compose.ui.text.input.TextFieldValue,
-    onTempNameChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        // Status and search at top
-        HomeStatusSection(uiState = uiState, viewModel = viewModel)
-
-        // Main content area
-        Row(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Navigation sidebar
-            NavigationSections(
-                uiState = uiState,
-                viewModel = viewModel,
-                tempName = tempName,
-                onTempNameChange = onTempNameChange,
-                modifier = Modifier
-                    .widthIn(max = 360.dp)
-                    .fillMaxHeight()
-            )
-
-            // Chat area takes up remaining space
-            ChatSection(
-                uiState = uiState,
-                viewModel = viewModel,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-            )
-        }
-    }
-}
-
-/**
- * Status row and search section
- */
 @Composable
 private fun HomeStatusSection(
+    navController: NavHostController,
     uiState: HomeUiState,
-    viewModel: HomeViewModel
+    homeViewModel: HomeViewModel
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        StatusRow(status = uiState.engineStatus, metrics = uiState.engineMetrics)
+        StatusRow(
+            status = uiState.model.engineStatus,
+            metrics = uiState.model.engineMetrics
+        )
 
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
-                value = uiState.searchQuery,
-                onValueChange = viewModel::updateSearchQuery,
+                value = uiState.search.searchQuery,
+                onValueChange = homeViewModel::updateSearchQuery,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
@@ -160,121 +129,130 @@ private fun HomeStatusSection(
             )
         }
 
-        if (uiState.searchResults.isNotEmpty()) {
+        if (uiState.search.searchResults.isNotEmpty()) {
             SectionCard(title = "Search Results") {
-                uiState.searchResults.forEach { result ->
-                    Text(result, style = MaterialTheme.typography.bodyMedium)
+                uiState.search.searchResults.forEach { result ->
+                    HomeSearchResultRow(
+                        result = result,
+                        onClick = {
+                            when (result.type) {
+                                ResultType.MESSAGE -> {
+                                    val chatId = result.chatId
+                                    if (chatId != null) {
+                                        homeViewModel.focusChat(chatId)
+                                        navController.navigate("chat/$chatId") {
+                                            launchSingleTop = true
+                                        }
+                                    }
+                                }
+
+                                ResultType.DOCUMENT_CHUNK -> {
+                                    navController.navigate("documents")
+                                }
+                            }
+                        }
+                    )
                 }
             }
         }
     }
 }
 
-/**
- * Chat display and input area
- */
 @Composable
-private fun ChatSection(
-    uiState: HomeUiState,
-    viewModel: HomeViewModel,
-    modifier: Modifier = Modifier
+private fun HomeSearchResultRow(
+    result: SearchResultItem,
+    onClick: () -> Unit
 ) {
-    ElevatedCard(modifier = modifier) {
-        if (uiState.activeChatId != null) {
-            ChatScreen(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                enabled = true,
-                messages = uiState.messages,
-                onSend = { prompt, onToken, onComplete ->
-                    viewModel.sendPrompt(prompt, onToken, onComplete)
-                }
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                result.title.ifBlank { result.type.name.lowercase().replaceFirstChar { it.uppercase() } },
+                style = MaterialTheme.typography.bodyMedium
             )
-        } else {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "Select a chat or create a new one",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            }
+            Text(
+                result.preview.take(160) + if (result.preview.length > 160) "…" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
 
-/**
- * Folders and chats navigation sections
- */
 @Composable
-private fun NavigationSections(
+private fun FoldersSection(
     uiState: HomeUiState,
-    viewModel: HomeViewModel,
-    tempName: androidx.compose.ui.text.input.TextFieldValue,
-    onTempNameChange: (androidx.compose.ui.text.input.TextFieldValue) -> Unit,
+    homeViewModel: HomeViewModel,
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Folders section
+    Column(modifier = modifier) {
         SectionCard(
             title = "Folders",
             actionLabel = "New",
-            onAction = {
-                onTempNameChange(androidx.compose.ui.text.input.TextFieldValue(""))
-                viewModel.showNewFolderDialog()
-            }
-        ) {
-            if (uiState.folders.isEmpty()) {
-                EmptyListHint("No folders yet.")
-            } else {
-                uiState.folders.forEach { folder ->
+            onAction = { homeViewModel.showNewFolderDialog() },
+            content = {
+                HomeListRow(
+                    title = "All Chats",
+                    subtitle = if (uiState.navigation.selectedFolderId == null) "Selected" else null,
+                    actions = listOf(
+                        "Open" to { homeViewModel.selectFolder(null) }
+                    )
+                )
+                if (uiState.navigation.folders.isEmpty()) {
+                    EmptyListHint("No folders yet. Create one to organize chats.")
+                }
+                uiState.navigation.folders.forEach { folder ->
                     HomeListRow(
                         title = folder.name,
-                        subtitle = if (uiState.selectedFolderId == folder.id) "Selected" else null,
+                        subtitle = if (uiState.navigation.selectedFolderId == folder.id) "Selected" else null,
                         actions = listOf(
-                            "Open" to { viewModel.selectFolder(folder.id) }
+                            "Open" to { homeViewModel.selectFolder(folder.id) },
+                            "Rename" to { homeViewModel.showRenameFolderDialog(folder.id, folder.name) },
+                            "Delete" to { homeViewModel.showDeleteFolderDialog(folder.id, folder.name) }
                         )
                     )
                 }
             }
-        }
+        )
+    }
+}
 
-        // Chats section
+@Composable
+private fun ChatsSection(
+    uiState: HomeUiState,
+    homeViewModel: HomeViewModel,
+    onOpenChat: (Long, Long?) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
         SectionCard(
             title = "Chats",
             actionLabel = "New",
-            onAction = {
-                onTempNameChange(androidx.compose.ui.text.input.TextFieldValue(""))
-                viewModel.showNewChatDialog()
-            }
-        ) {
-            if (uiState.chats.isEmpty()) {
-                EmptyListHint("No chats yet.")
-            } else {
-                uiState.chats.forEach { chat ->
-                    HomeListRow(
-                        title = chat.title,
-                        actions = listOf(
-                            "Open" to { viewModel.selectChat(chat.id) },
-                            "Rename" to {
-                                onTempNameChange(androidx.compose.ui.text.input.TextFieldValue(chat.title))
-                                viewModel.showRenameChatDialog(chat.id, chat.title)
-                            },
-                            "Move" to {
-                                viewModel.showMoveChatDialog(chat.id)
-                            },
-                            "Fork" to {
-                                viewModel.showForkChatDialog(chat.id)
-                            }
+            onAction = { homeViewModel.showNewChatDialog() },
+            content = {
+                val chats = uiState.navigation.chats
+                if (chats.isEmpty()) {
+                    val message = if (uiState.navigation.selectedFolderId == null) {
+                        "No chats yet. Start a new conversation to begin."
+                    } else {
+                        "No chats in this folder yet."
+                    }
+                    EmptyListHint(message)
+                } else {
+                    chats.forEach { chat ->
+                        HomeListRow(
+                            title = chat.title.ifBlank { "Untitled chat" },
+                            subtitle = if (uiState.navigation.activeChatId == chat.id) "Active" else null,
+                            actions = listOf(
+                                "Open" to { onOpenChat(chat.id, chat.folderId) },
+                                "Rename" to { homeViewModel.showRenameChatDialog(chat.id, chat.title) },
+                                "Move" to { homeViewModel.showMoveChatDialog(chat.id) },
+                                "Fork" to { homeViewModel.showForkChatDialog(chat.id) },
+                                "Delete" to { homeViewModel.showDeleteChatDialog(chat.id, chat.title) }
+                            )
                         )
-                    )
+                    }
                 }
             }
-        }
+        )
     }
 }

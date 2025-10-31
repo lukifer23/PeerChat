@@ -18,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -27,31 +28,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
+import com.peerchat.app.ui.ChatViewModel
 import com.peerchat.app.ui.HomeViewModel
+import com.peerchat.app.ui.components.SettingsDialog
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
-    val viewModel: HomeViewModel = hiltViewModel()
-    val uiState by viewModel.uiState.collectAsState()
+    val chatViewModel: ChatViewModel = hiltViewModel()
+    val homeViewModel: HomeViewModel = hiltViewModel()
+    val scope = rememberCoroutineScope()
+    val uiState by chatViewModel.uiState.collectAsState()
+    val homeUiState by homeViewModel.uiState.collectAsState()
 
     LaunchedEffect(chatId) {
-        viewModel.selectChat(chatId)
+        chatViewModel.selectChat(chatId)
     }
 
     var menuOpen by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     var showDelete by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    val title = uiState.chats.firstOrNull { it.id == chatId }?.title ?: "Chat"
-                    Text(title)
+                    Text(uiState.chatTitle.ifEmpty { "Chat" })
                 },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
@@ -59,14 +67,16 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Default.MoreVert, contentDescription = "More")
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text("Rename") }, onClick = {
                             menuOpen = false
-                            val current = uiState.chats.firstOrNull { it.id == chatId }?.title.orEmpty()
-                            renameText = current
+                            renameText = uiState.chatTitle
                             showRename = true
                         })
                         DropdownMenuItem(text = { Text("Delete") }, onClick = {
@@ -87,9 +97,8 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
                     modifier = Modifier.weight(1f),
                     enabled = true,
                     messages = uiState.messages,
-                    onSend = { prompt, onToken, onComplete ->
-                        viewModel.sendPrompt(prompt, onToken, onComplete)
-                    }
+                    streaming = uiState.streaming,
+                    onSend = chatViewModel::sendPrompt
                 )
             } else {
                 Text("Loading chat...")
@@ -102,7 +111,7 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
             onDismissRequest = { showRename = false },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.renameChat(chatId, renameText)
+                    chatViewModel.renameChat(chatId, renameText)
                     showRename = false
                 }) { Text("Save") }
             },
@@ -123,14 +132,39 @@ fun ChatRouteScreen(navController: NavHostController, chatId: Long) {
             onDismissRequest = { showDelete = false },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.deleteChat(chatId)
-                    showDelete = false
-                    navController.popBackStack()
+                    scope.launch {
+                        chatViewModel.deleteChat(chatId)
+                        showDelete = false
+                        navController.popBackStack()
+                    }
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
             title = { Text("Delete Chat") },
             text = { Text("This will delete the chat and its messages.") }
+        )
+    }
+
+    if (showSettings) {
+        SettingsDialog(
+            homeState = homeUiState,
+            chatState = uiState,
+            onDismiss = { showSettings = false },
+            onSysPromptChange = chatViewModel::updateSysPrompt,
+            onTemperatureChange = chatViewModel::updateTemperature,
+            onTopPChange = chatViewModel::updateTopP,
+            onTopKChange = chatViewModel::updateTopK,
+            onMaxTokensChange = chatViewModel::updateMaxTokens,
+            onModelPathChange = homeViewModel::updateModelPath,
+            onThreadChange = homeViewModel::updateThreadText,
+            onContextChange = homeViewModel::updateContextText,
+            onGpuChange = homeViewModel::updateGpuText,
+            onUseVulkanChange = homeViewModel::updateUseVulkan,
+            onLoadModel = homeViewModel::loadModel,
+            onUnloadModel = homeViewModel::unloadModel,
+            onSelectManifest = homeViewModel::activateManifest,
+            onDeleteManifest = homeViewModel::deleteManifest,
+            onTemplateSelect = chatViewModel::updateTemplate
         )
     }
 }

@@ -16,6 +16,9 @@ interface FolderDao {
 
     @Query("DELETE FROM folders WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    @Query("UPDATE folders SET name = :name, updatedAt = :now WHERE id = :id")
+    suspend fun rename(id: Long, name: String, now: Long)
 }
 
 @Dao
@@ -85,6 +88,12 @@ interface EmbeddingDao {
 
     @Query("SELECT * FROM embeddings")
     suspend fun listAll(): List<Embedding>
+
+    @Query("SELECT * FROM embeddings LIMIT :limit OFFSET :offset")
+    suspend fun listPaginated(limit: Int, offset: Int): List<Embedding>
+
+    @Query("SELECT COUNT(*) FROM embeddings")
+    suspend fun count(): Int
 }
 
 @Dao

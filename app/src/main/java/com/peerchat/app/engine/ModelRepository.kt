@@ -11,7 +11,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -49,24 +51,70 @@ class ModelRepository(
     suspend fun loadModel(config: StoredEngineConfig): OperationResult<ModelManifest> = withContext(Dispatchers.IO) {
         return@withContext try {
             unloadInternal()
-            val loaded = EngineRuntime.load(config.toEngineConfig())
-            if (loaded) {
-                ModelConfigStore.save(appContext, config)
-                manifestService.ensureManifestFor(
-                    path = config.modelPath,
-                    modelMetaJson = EngineRuntime.currentModelMeta(),
-                    isDefault = false
-                )
-                val finalManifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
-                if (finalManifest != null) {
-                    OperationResult.Success(finalManifest, "Model loaded successfully")
-                } else {
-                    OperationResult.Failure("Model loaded but manifest not found")
+            
+            // Track load time
+            val loadStartTime = System.currentTimeMillis()
+            
+            // Retry with exponential backoff
+            var attempt = 0
+            val maxRetries = 3
+            var lastError: String? = null
+            
+            while (attempt < maxRetries) {
+                val loaded = runCatching { EngineRuntime.load(config.toEngineConfig()) }.getOrElse {
+                    lastError = it.message
+                    false
                 }
-            } else {
-                ModelConfigStore.clear(appContext)
-                OperationResult.Failure("Failed to load model")
+                
+                if (loaded) {
+                    val loadTime = System.currentTimeMillis() - loadStartTime
+                    Logger.i(
+                        "Model loaded successfully",
+                        mapOf(
+                            "path" to config.modelPath,
+                            "loadTimeMs" to loadTime,
+                            "threads" to config.threads,
+                            "context" to config.contextLength,
+                            "gpuLayers" to config.gpuLayers,
+                            "useVulkan" to config.useVulkan
+                        )
+                    )
+                    
+                    ModelConfigStore.save(appContext, config)
+                    // Get metadata from engine (should be ready from parallel detection)
+                    val modelMeta = EngineRuntime.currentModelMeta()
+                    // Ensure manifest in background to not block
+                    kotlinx.coroutines.launch(Dispatchers.IO) {
+                        manifestService.ensureManifestFor(
+                            path = config.modelPath,
+                            modelMetaJson = modelMeta,
+                            isDefault = false
+                        )
+                    }
+                    // Try to get existing manifest immediately, refresh will happen in background
+                    val finalManifest = manifestService.list().firstOrNull { it.filePath == config.modelPath }
+                        ?: run {
+                            // Wait briefly if manifest doesn't exist yet (new import)
+                            kotlinx.coroutines.delay(100)
+                            manifestService.list().firstOrNull { it.filePath == config.modelPath }
+                        }
+                    if (finalManifest != null) {
+                        return@withContext OperationResult.Success(finalManifest, "Model loaded in ${loadTime}ms")
+                    } else {
+                        ModelConfigStore.clear(appContext)
+                        return@withContext OperationResult.Failure("Model loaded but manifest not found")
+                    }
+                }
+                
+                attempt++
+                if (attempt < maxRetries) {
+                    val delayMs = (1000L * (1 shl attempt)).coerceAtMost(10000L) // Max 10s
+                    kotlinx.coroutines.delay(delayMs)
+                }
             }
+            
+            ModelConfigStore.clear(appContext)
+            OperationResult.Failure("Failed to load model after $maxRetries attempts${lastError?.let { ": $it" } ?: ""}")
         } catch (e: Exception) {
             ModelConfigStore.clear(appContext)
             OperationResult.Failure("Error loading model: ${e.message}")
@@ -145,16 +193,51 @@ class ModelRepository(
             recordMiss()
             return@withContext false
         }
-        val payload = runCatching { file.readBytes() }.getOrNull()
-        if (payload == null) {
+        
+        // Validate file size (minimum expected size for a valid snapshot)
+        val fileSize = file.length()
+        if (fileSize < 16L) {
+            // Too small to be a valid snapshot, likely corrupted
+            removeEntry(chatId, deleteFile = true)
             recordMiss()
             return@withContext false
         }
-        val snapshot = decompress(payload)
+        
+        val payload = runCatching { file.readBytes() }.getOrNull()
+        if (payload == null || payload.isEmpty()) {
+            removeEntry(chatId, deleteFile = true)
+            recordMiss()
+            return@withContext false
+        }
+        
+        // Validate payload size matches file size
+        if (payload.size != fileSize.toInt()) {
+            removeEntry(chatId, deleteFile = true)
+            recordMiss()
+            return@withContext false
+        }
+        
+        val snapshot = runCatching { decompress(payload) }.getOrNull()
+        if (snapshot == null || snapshot.isEmpty()) {
+            // Decompression failed or empty snapshot
+            removeEntry(chatId, deleteFile = true)
+            recordMiss()
+            return@withContext false
+        }
+        
+        // Validate snapshot size (should be reasonable)
+        if (snapshot.size > maxCacheBytes) {
+            // Snapshot too large, likely corrupted
+            removeEntry(chatId, deleteFile = true)
+            recordMiss()
+            return@withContext false
+        }
+        
         val restored = runCatching { EngineRuntime.restoreState(snapshot) }.getOrDefault(false)
         if (restored) {
             recordHit(chatId, file)
         } else {
+            // Restore failed, delete corrupted cache
             removeEntry(chatId, deleteFile = true)
             recordMiss()
         }
@@ -271,12 +354,28 @@ class ModelRepository(
     }
 
     private fun updateStatsLocked() {
-        _cacheStats.value = CacheStats(
+        val stats = CacheStats(
             hits = cacheHits.get(),
             misses = cacheMisses.get(),
             evictions = cacheEvictions.get(),
             bytes = cacheBytes.coerceAtLeast(0)
         )
+        _cacheStats.value = stats
+        
+        // Log cache stats periodically (only on significant changes)
+        val total = stats.hits + stats.misses
+        if (total > 0 && (stats.hits % 10 == 0L || stats.misses % 10 == 0L || stats.evictions > 0)) {
+            Logger.i(
+                "KV Cache stats",
+                mapOf(
+                    "hits" to stats.hits,
+                    "misses" to stats.misses,
+                    "hitRate" to if (total > 0) (stats.hits.toFloat() / total.toFloat() * 100f).toInt() else 0,
+                    "evictions" to stats.evictions,
+                    "bytes" to stats.bytes
+                )
+            )
+        }
     }
 
     data class CacheStats(
@@ -297,13 +396,14 @@ class ModelRepository(
         topK: Int,
         maxTokens: Int,
         stop: Array<String>
-    ): kotlinx.coroutines.flow.Flow<EngineStreamEvent> {
+    ): Flow<EngineStreamEvent> {
         return flow {
-            // restore best-effort
             val restored = runCatching { restoreKv(chatId) }.getOrDefault(false)
-            if (!restored) runCatching { EngineRuntime.clearState(false) }
-            // delegate streaming
-            StreamingEngine.stream(
+            if (!restored) {
+                runCatching { EngineRuntime.clearState(false) }
+            }
+
+            val upstream = StreamingEngine.stream(
                 prompt = prompt,
                 systemPrompt = systemPrompt,
                 template = template,
@@ -313,14 +413,17 @@ class ModelRepository(
                 maxTokens = maxTokens,
                 stop = stop
             ).onEach { event ->
-                emit(event)
                 if (event is EngineStreamEvent.Terminal) {
                     val success = !event.metrics.isError
-                    runCatching {
-                        if (success) captureKv(chatId) else clearKv(chatId)
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            if (success) captureKv(chatId) else clearKv(chatId)
+                        }
                     }
                 }
-            }.collect { }
+            }.flowOn(Dispatchers.IO)
+
+            emitAll(upstream)
         }
     }
 }

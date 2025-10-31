@@ -5,6 +5,7 @@ import com.peerchat.data.db.RagChunk
 import com.peerchat.data.db.Document
 import com.peerchat.data.db.PeerDatabase
 import com.peerchat.engine.EngineNative
+import com.peerchat.engine.EngineRuntime
 import java.security.MessageDigest
 import kotlin.math.max
 import kotlin.math.min
@@ -54,6 +55,9 @@ private fun countTokensCached(text: String): Int {
 object RagService {
 
     suspend fun indexDocument(db: PeerDatabase, doc: Document, text: String, maxChunkTokens: Int = 512, overlapTokens: Int = 64) {
+        val engineStatus = EngineRuntime.status.value
+        if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return
+
         val chunks = optimizedTokenizerChunks(text, maxChunkTokens, overlapTokens)
         if (chunks.isEmpty()) return
 
@@ -90,6 +94,8 @@ object RagService {
     }
 
     suspend fun retrieve(db: PeerDatabase, query: String, topK: Int = 6): List<RagChunk> {
+        val engineStatus = EngineRuntime.status.value
+        if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return emptyList()
         return retrieveHybrid(db, query, topK)
     }
 
@@ -100,20 +106,31 @@ object RagService {
         alphaSemantic: Float = 0.7f,
         alphaLexical: Float = 0.3f,
     ): List<RagChunk> {
+        val engineStatus = EngineRuntime.status.value
+        if (engineStatus !is EngineRuntime.EngineStatus.Loaded) return emptyList()
+
         val qv = EngineNative.embed(arrayOf(query)).firstOrNull() ?: return emptyList()
 
-        // Get all embeddings in one query for better performance
-        val allEmbeddings = db.embeddingDao().listAll()
-
-        // Pre-filter embeddings and calculate semantic scores
+        // Process embeddings in batches to avoid loading all into memory
+        val batchSize = 1000
         val semanticScores = HashMap<Long, Float>()
-        val validEmbeddings = allEmbeddings.filter { it.dim > 0 && it.vector.isNotEmpty() }
+        var offset = 0
+        
+        while (true) {
+            val batch = db.embeddingDao().listPaginated(batchSize, offset)
+            if (batch.isEmpty()) break
 
-        // Batch cosine similarity calculations for better cache performance
-        for (emb in validEmbeddings) {
-            val v = bytesToFloatArray(emb.vector)
-            val s = cosine(qv, v, emb.norm)
-            semanticScores[emb.id] = s
+            // Calculate semantic scores for this batch
+            for (emb in batch) {
+                if (emb.dim > 0 && emb.vector.isNotEmpty()) {
+                    val v = bytesToFloatArray(emb.vector)
+                    val s = cosine(qv, v, emb.norm)
+                    semanticScores[emb.id] = s
+                }
+            }
+            
+            offset += batch.size
+            if (batch.size < batchSize) break // Last batch
         }
 
         // Get lexical matches (FTS search)
@@ -273,4 +290,3 @@ private fun bytesToFloatArray(b: ByteArray): FloatArray {
     for (i in out.indices) out[i] = bb.getFloat()
     return out
 }
-

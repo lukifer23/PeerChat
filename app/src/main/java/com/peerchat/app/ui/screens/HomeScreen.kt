@@ -1,174 +1,226 @@
 package com.peerchat.app.ui.screens
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import com.peerchat.app.ui.ChatEvent
+import com.peerchat.app.ui.ChatViewModel
 import com.peerchat.app.ui.HomeEvent
 import com.peerchat.app.ui.DialogState
 import com.peerchat.app.ui.HomeViewModel
 import com.peerchat.app.ui.components.AdaptiveHomeLayout
+import com.peerchat.app.ui.components.GlobalToastManager
 import com.peerchat.app.ui.components.HomeTopBar
 import com.peerchat.app.ui.components.*
 
-private const val ROUTE_HOME = "home"
-private const val ROUTE_CHAT = "chat/{chatId}"
 private const val ROUTE_DOCUMENTS = "documents"
 private const val ROUTE_MODELS = "models"
-private const val ROUTE_SETTINGS = "settings"
-private const val ROUTE_REASONING = "reasoning/{chatId}"
 
 @Composable
 fun HomeScreen(
     navController: NavHostController,
-    viewModel: HomeViewModel = hiltViewModel()
+    homeViewModel: HomeViewModel = hiltViewModel(),
+    chatViewModel: ChatViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
+    val scope = rememberCoroutineScope()
+    val uiState by homeViewModel.uiState.collectAsState()
+    val chatUiState by chatViewModel.uiState.collectAsState()
 
-    var tempName by remember { mutableStateOf(TextFieldValue("")) }
+    // Optimize dialog state computation
+    val dialogState by remember(uiState.dialogState) {
+        derivedStateOf { uiState.dialogState }
+    }
 
-    LaunchedEffect(viewModel) {
-        viewModel.events.collect { event ->
-            when (event) {
-                is HomeEvent.Toast -> {
-                    android.widget.Toast.makeText(
-                        context,
-                        event.message,
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
+    // Combine event flows into single LaunchedEffect for efficiency
+    LaunchedEffect(homeViewModel, chatViewModel) {
+        kotlinx.coroutines.coroutineScope {
+            launch {
+                homeViewModel.events.collect { event ->
+                    when (event) {
+                        is HomeEvent.Toast -> {
+                            GlobalToastManager.showToast(event.message, event.isError)
+                        }
+                        is HomeEvent.SelectChat -> {
+                            chatViewModel.selectChat(event.chatId)
+                        }
+                    }
+                }
+            }
+            launch {
+                chatViewModel.events.collect { event ->
+                    when (event) {
+                        is ChatEvent.Toast -> {
+                            GlobalToastManager.showToast(event.message, event.isError)
+                        }
+                        is ChatEvent.ChatCreated -> {
+                            homeViewModel.focusChat(event.chatId, event.folderId)
+                            navController.navigate("chat/${event.chatId}") {
+                                launchSingleTop = true
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    val documentImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
-            viewModel.importDocument(uri)
-        }
-    }
-    val modelImportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) {
-            viewModel.importModel(uri)
-        }
-    }
 
     Scaffold(
         topBar = {
             HomeTopBar(
-                docImportInProgress = uiState.indexing,
-                modelImportInProgress = uiState.importingModel,
                 onNewChat = {
-                    tempName = TextFieldValue("")
-                    viewModel.showNewChatDialog()
-                },
-                onImportDoc = {
-                    documentImportLauncher.launch(arrayOf("application/pdf", "text/*", "image/*"))
-                },
-                onImportModel = {
-                    modelImportLauncher.launch(arrayOf("application/octet-stream", "model/gguf", "application/x-gguf", "*/*"))
+                    homeViewModel.showNewChatDialog()
                 },
                 onOpenModels = { navController.navigate(ROUTE_MODELS) },
-                onOpenSettings = { viewModel.showSettingsDialog() },
+                onOpenSettings = { homeViewModel.showSettingsDialog() },
                 onOpenDocuments = { navController.navigate(ROUTE_DOCUMENTS) }
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { homeViewModel.showNewChatDialog() }) {
+                Icon(Icons.Default.Add, contentDescription = "New Chat")
+            }
         }
     ) { innerPadding ->
         AdaptiveHomeLayout(
             navController = navController,
             uiState = uiState,
-            viewModel = viewModel,
-            tempName = tempName,
-            onTempNameChange = { tempName = it },
+            homeViewModel = homeViewModel,
             modifier = Modifier.padding(innerPadding)
         )
     }
 
     // Unified Dialog Rendering
-    when (val dialogState = uiState.dialogState) {
+    when (dialogState) {
         is DialogState.None -> Unit // No dialog
         is DialogState.RenameChat -> {
+            val renameState = dialogState
             RenameChatDialog(
-                currentTitle = dialogState.currentTitle,
+                currentTitle = renameState.currentTitle,
                 onConfirm = { title ->
-                    viewModel.renameChat(dialogState.chatId, title)
-                    viewModel.dismissDialog()
+                    chatViewModel.renameChat(renameState.chatId, title)
+                    homeViewModel.dismissDialog()
                 },
-                onDismiss = viewModel::dismissDialog
+                onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.MoveChat -> {
+            val moveState = dialogState
             MoveChatDialog(
-                folders = uiState.folders,
+                folders = uiState.navigation.folders,
                 onMoveToFolder = { folderId ->
-                    viewModel.moveChat(dialogState.chatId, folderId)
-                    viewModel.dismissDialog()
+                    chatViewModel.moveChat(moveState.chatId, folderId)
+                    homeViewModel.dismissDialog()
                 },
-                onDismiss = viewModel::dismissDialog
+                onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.ForkChat -> {
+            val forkState = dialogState
             ForkChatDialog(
                 onConfirm = {
-                    viewModel.forkChat(dialogState.chatId)
-                    viewModel.dismissDialog()
+                    // Fork is async, handle in coroutine
+                    scope.launch {
+                        chatViewModel.forkChat(forkState.chatId)
+                        homeViewModel.dismissDialog()
+                    }
                 },
-                onDismiss = viewModel::dismissDialog
+                onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.NewFolder -> {
             NewFolderDialog(
                 onConfirm = { name ->
-                    viewModel.createFolder(name)
-                    viewModel.dismissDialog()
+                    homeViewModel.createFolder(name)
+                    homeViewModel.dismissDialog()
                 },
-                onDismiss = viewModel::dismissDialog
+                onDismiss = homeViewModel::dismissDialog
+            )
+        }
+        is DialogState.RenameFolder -> {
+            val renameFolderState = dialogState
+            RenameFolderDialog(
+                currentName = renameFolderState.currentName,
+                onConfirm = { name ->
+                    homeViewModel.renameFolder(renameFolderState.folderId, name)
+                    homeViewModel.dismissDialog()
+                },
+                onDismiss = homeViewModel::dismissDialog
+            )
+        }
+        is DialogState.DeleteFolder -> {
+            val deleteFolderState = dialogState
+            DeleteFolderDialog(
+                folderName = deleteFolderState.folderName,
+                onConfirm = {
+                    homeViewModel.deleteFolder(deleteFolderState.folderId)
+                    homeViewModel.dismissDialog()
+                },
+                onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.NewChat -> {
             NewChatDialog(
                 onConfirm = { title ->
-                    viewModel.createChat(title)
-                    viewModel.dismissDialog()
+                    val selectedFolderId = uiState.navigation.selectedFolderId
+                    val defaultPrompt = chatUiState.sysPrompt
+                    val modelId = uiState.model.storedConfig?.modelPath ?: "default"
+                    chatViewModel.createChat(title, selectedFolderId, defaultPrompt, modelId)
+                    homeViewModel.dismissDialog()
                 },
-                onDismiss = viewModel::dismissDialog
+                onDismiss = homeViewModel::dismissDialog
+            )
+        }
+        is DialogState.DeleteChat -> {
+            val deleteChatState = dialogState
+            DeleteChatDialog(
+                chatTitle = deleteChatState.chatTitle,
+                onConfirm = {
+                    chatViewModel.deleteChat(deleteChatState.chatId)
+                    homeViewModel.dismissDialog()
+                },
+                onDismiss = homeViewModel::dismissDialog
             )
         }
         is DialogState.Settings -> {
             SettingsDialog(
-                state = uiState,
-                onDismiss = viewModel::dismissDialog,
-                onSysPromptChange = viewModel::updateSysPrompt,
-                onTemperatureChange = viewModel::updateTemperature,
-                onTopPChange = viewModel::updateTopP,
-                onTopKChange = viewModel::updateTopK,
-                onMaxTokensChange = viewModel::updateMaxTokens,
-                onModelPathChange = viewModel::updateModelPath,
-                onThreadChange = viewModel::updateThreadText,
-                onContextChange = viewModel::updateContextText,
-                onGpuChange = viewModel::updateGpuText,
-                onUseVulkanChange = viewModel::updateUseVulkan,
-                onLoadModel = viewModel::loadModelFromInputs,
-                onUnloadModel = viewModel::unloadModel,
-                onSelectManifest = viewModel::activateManifest,
-                onDeleteManifest = viewModel::deleteManifest,
-                onTemplateSelect = viewModel::updateTemplate
+                homeState = uiState,
+                chatState = chatUiState,
+                onDismiss = homeViewModel::dismissDialog,
+                onSysPromptChange = chatViewModel::updateSysPrompt,
+                onTemperatureChange = chatViewModel::updateTemperature,
+                onTopPChange = chatViewModel::updateTopP,
+                onTopKChange = chatViewModel::updateTopK,
+                onMaxTokensChange = chatViewModel::updateMaxTokens,
+                onModelPathChange = homeViewModel::updateModelPath,
+                onThreadChange = homeViewModel::updateThreadText,
+                onContextChange = homeViewModel::updateContextText,
+                onGpuChange = homeViewModel::updateGpuText,
+                onUseVulkanChange = homeViewModel::updateUseVulkan,
+                onLoadModel = homeViewModel::loadModel,
+                onUnloadModel = homeViewModel::unloadModel,
+                onSelectManifest = homeViewModel::activateManifest,
+                onDeleteManifest = homeViewModel::deleteManifest,
+                onTemplateSelect = chatViewModel::updateTemplate
             )
         }
     }

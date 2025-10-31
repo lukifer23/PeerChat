@@ -2,39 +2,32 @@ package com.peerchat.app.ui
 
 import android.content.Context
 import android.net.Uri
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
 import com.peerchat.app.engine.DocumentService
-import com.peerchat.app.engine.EngineStreamEvent
 import com.peerchat.app.engine.ModelConfigStore
 import com.peerchat.app.engine.ModelRepository
 import com.peerchat.app.engine.ModelService
 import com.peerchat.app.engine.ModelStateCache
-import com.peerchat.app.engine.PromptComposer
-import com.peerchat.app.engine.StoredEngineConfig
 import com.peerchat.app.engine.SearchService
-import com.peerchat.app.ui.DialogState
-import com.peerchat.app.ui.HomeEvent
+import com.peerchat.app.engine.StoredEngineConfig
+import com.peerchat.app.ui.HomeEvent.Toast
+import com.peerchat.app.ui.DocumentState
 import com.peerchat.app.ui.HomeUiState
-import com.peerchat.app.ui.stream.ReasoningParser
-import com.peerchat.app.util.optFloatOrNull
-import com.peerchat.app.util.optIntOrNull
-import com.peerchat.app.util.optStringOrNull
+import com.peerchat.app.ui.ModelState
+import com.peerchat.app.ui.SearchResultItem
+import com.peerchat.app.ui.SearchResultItem.ResultType
+import com.peerchat.data.db.Chat
 import com.peerchat.data.db.ModelManifest
-import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
-import com.peerchat.templates.TemplateCatalog
-import com.peerchat.rag.Retriever
-import com.peerchat.rag.RagService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,237 +35,149 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
-import java.security.MessageDigest
 import javax.inject.Inject
 
-@OptIn(FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val repository: PeerChatRepository,
-    private val modelService: ModelService,
-    private val modelRepository: ModelRepository,
-    private val documentService: DocumentService,
     private val searchService: SearchService,
+    private val modelRepository: ModelRepository,
+    private val modelService: ModelService,
     private val modelCache: ModelStateCache,
-    private val promptComposer: PromptComposer,
-    private val retriever: Retriever
-) : ViewModel() {
+    private val documentService: DocumentService,
+) : BaseViewModel() {
 
-    // Memoization cache for expensive operations
-    private val memoizationCache = mutableMapOf<String, Pair<Long, Any>>()
-    private val MEMOIZATION_TTL: Long = 30000L // 30 seconds
-
-    // Memoization helper
-    private inline fun <T> memoize(key: String, block: () -> T): T {
-        val currentTime = System.currentTimeMillis()
-        val cached = memoizationCache[key]
-
-        if (cached != null && (currentTime - cached.first) < MEMOIZATION_TTL) {
-            @Suppress("UNCHECKED_CAST")
-            return cached.second as T
-        }
-
-        val result = block()
-        memoizationCache[key] = Pair(currentTime, result as Any)
-
-        // Clean up old entries periodically
-        if (memoizationCache.size > 100) {
-            val cutoff = currentTime - MEMOIZATION_TTL
-            memoizationCache.entries.removeIf { it.value.first < cutoff }
-        }
-
-        return result
-    }
-
-    private val templateOptions = memoize("template_options") {
-        TemplateCatalog.descriptors().map {
-            TemplateOption(
-                id = it.id,
-                label = it.displayName,
-                stopSequences = it.stopSequences
-            )
-        }
-    }
-
-    private val _uiState = MutableStateFlow(HomeUiState(templates = templateOptions))
+    private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     private val _events = MutableSharedFlow<HomeEvent>()
     val events = _events.asSharedFlow()
 
+    private val _searchQuery = MutableStateFlow("")
     private val selectedFolderId = MutableStateFlow<Long?>(null)
-    private val activeChatId = MutableStateFlow<Long?>(null)
-    private val searchQuery = MutableStateFlow("")
-    private var searchJob: kotlinx.coroutines.Job? = null
 
-    // Race condition prevention - only one send operation at a time per chat
-    private val activeSendJobs = mutableMapOf<Long, kotlinx.coroutines.Job>()
+    override fun emitToast(message: String, isError: Boolean) {
+        _events.tryEmit(Toast(message, isError))
+    }
 
     init {
         observeFolders()
-        observeChats()
         observeSearch()
+        observeChats()
         observeEngine()
         observeManifests()
-        observeMessages()
         observeCacheStats()
-        restoreModelConfig()
+        restoreStoredConfig()
     }
+
+    // ------------------------------------------------------------------------
+    // Observers
+    // ------------------------------------------------------------------------
 
     private fun observeFolders() {
         viewModelScope.launch {
-            repository.observeFolders()
-                .collectLatest { folders ->
-                    _uiState.update { it.copy(folders = folders) }
+            repository.observeFolders().collectLatest { folders ->
+                val currentSelected = selectedFolderId.value
+                val resolvedSelected = when {
+                    folders.isEmpty() -> null
+                    currentSelected != null && folders.any { it.id == currentSelected } -> currentSelected
+                    else -> folders.first().id
                 }
+                if (selectedFolderId.value != resolvedSelected) {
+                    selectedFolderId.value = resolvedSelected
+                }
+                _uiState.update {
+                    it.copy(
+                        navigation = it.navigation.copy(
+                            folders = folders,
+                            selectedFolderId = resolvedSelected
+                        )
+                    )
+                }
+            }
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private fun observeChats() {
         viewModelScope.launch {
             selectedFolderId
-                .flatMapLatest { repository.observeChats(it) }
+                .flatMapLatest { folderId -> repository.observeChats(folderId) }
                 .collectLatest { chats ->
-                    val currentActive = activeChatId.value
-                    val resolvedActive = when {
-                        chats.isEmpty() -> null
-                        currentActive == null || chats.none { it.id == currentActive } -> chats.first().id
-                        else -> currentActive
-                    }
-                    val activeChanged = resolvedActive != null && resolvedActive != currentActive
-                    activeChatId.value = resolvedActive
-                    _uiState.update {
-                        it.copy(
-                            chats = chats,
-                            activeChatId = resolvedActive,
-                            selectedFolderId = selectedFolderId.value
+                    val previousActive = _uiState.value.navigation.activeChatId
+                    val resolvedActive = resolveActiveChat(previousActive, chats)
+                    _uiState.update { state ->
+                        state.copy(
+                            navigation = state.navigation.copy(
+                                chats = chats,
+                                activeChatId = resolvedActive
+                            )
                         )
                     }
-                    if (activeChanged) {
-                        loadChatSettings(resolvedActive!!)
-                    }
-                    if (chats.isEmpty()) {
-                        ensureSeedChat()
+                    if (resolvedActive != null && resolvedActive != previousActive) {
+                        _events.emit(HomeEvent.SelectChat(resolvedActive))
                     }
                 }
         }
     }
 
+    private fun resolveActiveChat(current: Long?, chats: List<Chat>): Long? {
+        if (chats.isEmpty()) return null
+        if (current != null && chats.any { it.id == current }) return current
+        return chats.first().id
+    }
+
+    @OptIn(FlowPreview::class)
     private fun observeSearch() {
         viewModelScope.launch {
-            searchQuery
-                .debounce(300) // Increased debounce for better performance
+            _searchQuery
+                .debounce(300)
                 .distinctUntilChanged()
                 .collectLatest { query ->
-                    // Cancel any previous search
-                    searchJob?.cancel()
-
                     val trimmed = query.trim()
                     if (trimmed.isEmpty()) {
-                        _uiState.update { it.copy(searchQuery = query, searchResults = emptyList()) }
+                        _uiState.update {
+                            it.copy(
+                                search = it.search.copy(
+                                    searchQuery = query,
+                                    searchResults = emptyList()
+                                )
+                            )
+                        }
                     } else {
-                        // Start new search job
-                        searchJob = launch {
-                            val results = performSearch(trimmed)
-                            _uiState.update { it.copy(searchQuery = query, searchResults = results) }
+                        val results = performSearch(trimmed)
+                        _uiState.update {
+                            it.copy(
+                                search = it.search.copy(
+                                    searchQuery = query,
+                                    searchResults = results
+                                )
+                            )
                         }
                     }
                 }
-        }
-    }
-
-    private suspend fun performSearch(query: String): List<String> {
-        return try {
-            searchService.search(query, 50)
-                .map { result ->
-                    when (result.type) {
-                        SearchService.SearchResultType.MESSAGE ->
-                            "Msg:#${result.chatId ?: 0}: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
-                        SearchService.SearchResultType.DOCUMENT_CHUNK ->
-                            "Doc: ${result.content.take(100)}${if (result.content.length > 100) "..." else ""}"
-                    }
-                }
-        } catch (e: Exception) {
-            listOf("Search error: ${e.message}")
-        }
-    }
-
-    private fun observeMessages() {
-        viewModelScope.launch {
-            activeChatId
-                .flatMapLatest { id ->
-                    if (id == null) {
-                        kotlinx.coroutines.flow.flowOf(emptyList())
-                    } else {
-                        // Lazy load messages - only load last 50 for performance
-                        kotlinx.coroutines.flow.flow {
-                            val messages = repository.listMessages(id)
-                            // Sort by creation time and take last 50
-                            val recentMessages = messages.sortedBy { it.createdAt }.takeLast(50)
-                            emit(recentMessages)
-                        }
-                    }
-                }
-                .collectLatest { msgs ->
-                    _uiState.update { it.copy(messages = msgs) }
-                }
-        }
-    }
-
-    private fun observeCacheStats() {
-        viewModelScope.launch {
-            modelCache.stats().collectLatest { stats ->
-                _uiState.update { it.copy(cacheStats = stats) }
-            }
-        }
-    }
-
-    private fun loadChatSettings(chatId: Long) {
-        viewModelScope.launch {
-            val chat = repository.getChat(chatId) ?: return@launch
-            val settings = runCatching { JSONObject(chat.settingsJson) }.getOrNull()
-            val templateId = settings?.optStringOrNull("templateId")
-                ?.takeIf { candidate -> templateOptions.any { it.id == candidate } }
-            val temperature = settings?.optFloatOrNull("temperature")
-            val topP = settings?.optFloatOrNull("topP")
-            val topK = settings?.optIntOrNull("topK")
-            val maxTokens = settings?.optIntOrNull("maxTokens")
-            _uiState.update { state ->
-                state.copy(
-                    sysPrompt = chat.systemPrompt,
-                    temperature = temperature ?: state.temperature,
-                    topP = topP ?: state.topP,
-                    topK = topK ?: state.topK,
-                    maxTokens = maxTokens ?: state.maxTokens,
-                    selectedTemplateId = templateId
-                )
-            }
         }
     }
 
     private fun observeEngine() {
         viewModelScope.launch {
             EngineRuntime.status.collect { status ->
-                _uiState.update { it.copy(engineStatus = status) }
+                updateModelState { it.copy(engineStatus = status) }
             }
         }
         viewModelScope.launch {
             EngineRuntime.metrics.collect { metrics ->
-                _uiState.update { it.copy(engineMetrics = metrics) }
+                updateModelState { it.copy(engineMetrics = metrics) }
             }
         }
         viewModelScope.launch {
             EngineRuntime.modelMeta.collect { meta ->
-                _uiState.update { it.copy(modelMeta = meta) }
+                updateModelState { it.copy(modelMeta = meta) }
             }
         }
     }
@@ -280,14 +185,16 @@ class HomeViewModel @Inject constructor(
     private fun observeManifests() {
         viewModelScope.launch {
             modelService.getManifestsFlow().collectLatest { manifests ->
-                val state = _uiState.value
-                val targetPath = state.storedConfig?.modelPath
-                    ?: state.modelPath.takeIf { it.isNotBlank() }
-                val activeManifest = targetPath?.let { path ->
-                    manifests.firstOrNull { it.filePath == path }
+                val activePath = uiState.value.model.storedConfig?.modelPath
+                    ?: uiState.value.model.modelPath
+
+                val activeManifest = manifests.firstOrNull { it.filePath == activePath }
+
+                val detectedTemplate = activeManifest?.let {
+                    modelService.getDetectedTemplateId(it)
                 }
-                val detectedTemplate = activeManifest?.let { modelService.getDetectedTemplateId(it) }
-                _uiState.update {
+
+                updateModelState {
                     it.copy(
                         manifests = manifests,
                         detectedTemplateId = detectedTemplate
@@ -297,510 +204,120 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun restoreModelConfig() {
-        val config = ModelConfigStore.load(appContext)
-        if (config != null) {
-            _uiState.update {
-                it.copy(
-                    storedConfig = config,
-                    modelPath = config.modelPath,
-                    threadText = config.threads.toString(),
-                    contextText = config.contextLength.toString(),
-                    gpuText = config.gpuLayers.toString(),
-                    useVulkan = config.useVulkan
-                )
-            }
-            viewModelScope.launch {
-                val result = modelService.loadModel(config)
-                // Handle result if needed
-            }
-        }
-    }
-
-    private fun ensureSeedChat() {
+    private fun observeCacheStats() {
         viewModelScope.launch {
-            val id = repository.createChat(
-                title = "New Chat",
-                folderId = selectedFolderId.value,
-                systemPrompt = _uiState.value.sysPrompt,
-                modelId = _uiState.value.storedConfig?.modelPath ?: "default"
-            )
-            activeChatId.value = id
-            _uiState.update { it.copy(activeChatId = id) }
-            loadChatSettings(id)
+            modelCache.stats().collectLatest { stats ->
+                updateModelState { it.copy(cacheStats = stats) }
+            }
         }
     }
 
-    fun selectFolder(folderId: Long?) {
-        selectedFolderId.value = folderId
-        _uiState.update { it.copy(selectedFolderId = folderId) }
+    private fun restoreStoredConfig() {
+        val stored = ModelConfigStore.load(appContext) ?: return
+        updateModelState {
+            it.copy(
+                storedConfig = stored,
+                modelPath = stored.modelPath,
+                threadText = stored.threads.toString(),
+                contextText = stored.contextLength.toString(),
+                gpuText = stored.gpuLayers.toString(),
+                useVulkan = stored.useVulkan
+            )
+        }
+        viewModelScope.launch { loadModelInternal(stored) }
     }
 
-    fun selectChat(chatId: Long) {
-        activeChatId.value = chatId
-        _uiState.update { it.copy(activeChatId = chatId) }
-        loadChatSettings(chatId)
-        viewModelScope.launch { _events.emit(HomeEvent.Toast("Opened chat #$chatId")) }
-    }
+    // ------------------------------------------------------------------------
+    // Search / folders API
+    // ------------------------------------------------------------------------
 
     fun updateSearchQuery(query: String) {
-        searchQuery.value = query
+        _searchQuery.value = query
     }
 
-    fun updateSysPrompt(value: String) {
-        _uiState.update { it.copy(sysPrompt = value) }
-        persistChatSettings()
-    }
+    private suspend fun performSearch(query: String): List<SearchResultItem> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                searchService.search(query, 50).map { result ->
+                    when (result.type) {
+                        SearchService.SearchResultType.MESSAGE -> {
+                            SearchResultItem(
+                                type = ResultType.MESSAGE,
+                                title = result.title,
+                                preview = result.content,
+                                chatId = result.chatId,
+                                messageId = result.messageId
+                            )
+                        }
 
-    fun updateTemperature(value: Float) {
-        _uiState.update { it.copy(temperature = value) }
-        persistChatSettings()
-    }
-
-    fun updateTopP(value: Float) {
-        _uiState.update { it.copy(topP = value) }
-        persistChatSettings()
-    }
-
-    fun updateTopK(value: Int) {
-        _uiState.update { it.copy(topK = value) }
-        persistChatSettings()
-    }
-
-    fun updateMaxTokens(value: Int) {
-        _uiState.update { it.copy(maxTokens = value) }
-        persistChatSettings()
-    }
-
-    fun updateTemplate(templateId: String?) {
-        val normalized = templateId
-            ?.takeIf { it.isNotBlank() }
-            ?.takeIf { candidate -> templateOptions.any { it.id == candidate } }
-        _uiState.update { it.copy(selectedTemplateId = normalized) }
-        persistChatSettings()
-    }
-
-    private fun persistChatSettings() {
-        val chatId = activeChatId.value ?: return
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                val dao = repository.database().chatDao()
-                val base = dao.getById(chatId) ?: return@withContext
-                val state = _uiState.value
-                val settings = JSONObject().apply {
-                    put("temperature", state.temperature)
-                    put("topP", state.topP)
-                    put("topK", state.topK)
-                    put("maxTokens", state.maxTokens)
-                    state.selectedTemplateId?.let { put("templateId", it) }
-                }.toString()
-                dao.upsert(
-                    base.copy(
-                        systemPrompt = state.sysPrompt,
-                        settingsJson = settings,
-                        updatedAt = System.currentTimeMillis()
+                        SearchService.SearchResultType.DOCUMENT_CHUNK -> {
+                            SearchResultItem(
+                                type = ResultType.DOCUMENT_CHUNK,
+                                title = result.title,
+                                preview = result.content,
+                                documentId = result.documentId,
+                                chunkId = result.chunkId
+                            )
+                        }
+                    }
+                }
+            }.getOrElse {
+                listOf(
+                    SearchResultItem(
+                        type = ResultType.MESSAGE,
+                        title = "Error",
+                        preview = it.message ?: "Unknown error"
                     )
                 )
             }
         }
-    }
 
     fun createFolder(name: String) {
-        viewModelScope.launch {
-            val trimmed = name.trim().ifEmpty { "Folder" }
-            repository.createFolder(trimmed)
-        }
+        executeOperation(
+            operation = {
+                tryOperation(
+                    operation = {
+                        val trimmed = name.trim().ifEmpty { "Folder" }
+                        repository.createFolder(trimmed)
+                    },
+                    successMessage = "Folder created",
+                    errorPrefix = "Failed to create folder"
+                )
+            },
+            onSuccess = {
+                selectedFolderId.value = it
+            }
+        )
     }
 
-    fun createChat(name: String) {
-        viewModelScope.launch {
-            val result = repository.createChatResult(
-                title = name,
-                folderId = selectedFolderId.value,
-                systemPrompt = _uiState.value.sysPrompt,
-                modelId = _uiState.value.storedConfig?.modelPath ?: "default"
-            )
-            when (result) {
-                is OperationResult.Success -> {
-                    activeChatId.value = result.data
-                    _uiState.update { it.copy(activeChatId = result.data) }
-                    loadChatSettings(result.data)
-                    _events.emit(HomeEvent.Toast(result.message))
-                }
-                is OperationResult.Failure -> {
-                    _events.emit(HomeEvent.Toast(result.error))
-                }
-            }
-        }
-    }
-
-    fun renameChat(chatId: Long, title: String) {
-        viewModelScope.launch {
-            val result = repository.renameChatResult(chatId, title)
-            when (result) {
-                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
-                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
-            }
-        }
-    }
-
-    fun moveChat(chatId: Long, folderId: Long?) {
-        viewModelScope.launch {
-            val result = repository.moveChatResult(chatId, folderId)
-            when (result) {
-                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
-                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
-            }
-        }
-    }
-
-    fun forkChat(chatId: Long) {
-        viewModelScope.launch {
-            val result = repository.forkChatResult(chatId)
-            when (result) {
-                is OperationResult.Success -> {
-                    activeChatId.value = result.data
-                    _uiState.update { it.copy(activeChatId = result.data) }
-                    loadChatSettings(result.data)
-                    _events.emit(HomeEvent.Toast(result.message))
-                }
-                is OperationResult.Failure -> {
-                    _events.emit(HomeEvent.Toast(result.error))
-                }
-            }
-        }
-    }
-
-    fun deleteChat(chatId: Long) {
-        viewModelScope.launch {
-            val result = repository.deleteChatResult(chatId)
-            when (result) {
-                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
-                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
-            }
-        }
+    fun renameFolder(folderId: Long, name: String) {
+        executeOperation(
+            operation = { repository.renameFolderResult(folderId, name) }
+        )
     }
 
     fun deleteFolder(folderId: Long) {
-        viewModelScope.launch {
-            runCatching { repository.deleteFolder(folderId) }
-                .onSuccess { _events.emit(HomeEvent.Toast("Folder deleted")) }
-                .onFailure { _events.emit(HomeEvent.Toast("Delete error: ${'$'}{it.message}")) }
-        }
-    }
-
-    fun updateModelPath(path: String) {
-        _uiState.update { it.copy(modelPath = path) }
-    }
-
-    fun updateThreadText(value: String) {
-        _uiState.update { it.copy(threadText = value) }
-    }
-
-    fun updateContextText(value: String) {
-        _uiState.update { it.copy(contextText = value) }
-    }
-
-    fun updateGpuText(value: String) {
-        _uiState.update { it.copy(gpuText = value) }
-    }
-
-    fun updateUseVulkan(value: Boolean) {
-        _uiState.update { it.copy(useVulkan = value) }
-    }
-
-    fun loadModelFromInputs() {
-        if (_uiState.value.importingModel) return
-        val state = _uiState.value
-        val threads = state.threadText.toIntOrNull()
-        val contextLength = state.contextText.toIntOrNull()
-        val gpuLayers = state.gpuText.toIntOrNull()
-        if (state.modelPath.isBlank() || threads == null || contextLength == null || gpuLayers == null) {
-            viewModelScope.launch {
-                _events.emit(HomeEvent.Toast("Invalid model configuration"))
+        executeOperation(
+            operation = {
+                tryOperation(
+                    operation = {
+                        repository.deleteFolder(folderId)
+                    },
+                    successMessage = "Folder deleted",
+                    errorPrefix = "Failed to delete folder"
+                )
+            },
+            onSuccess = {
+                if (selectedFolderId.value == folderId) {
+                    selectedFolderId.value = null
+                }
             }
-            return
-        }
-        val config = StoredEngineConfig(
-            modelPath = state.modelPath,
-            threads = threads,
-            contextLength = contextLength,
-            gpuLayers = gpuLayers,
-            useVulkan = state.useVulkan
         )
-        viewModelScope.launch {
-            _uiState.update { it.copy(importingModel = true) }
-            val result = modelService.loadModel(config)
-            _uiState.update { it.copy(importingModel = false) }
-            when (result) {
-                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
-                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
-            }
-        }
     }
 
-    fun unloadModel() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(importingModel = true) }
-            try {
-                val message = modelService.unloadModel()
-                _uiState.update {
-                    it.copy(
-                        storedConfig = null,
-                        modelPath = "",
-                        threadText = "6",
-                        contextText = "4096",
-                        gpuText = "20",
-                        detectedTemplateId = null
-                    )
-                }
-                _events.emit(HomeEvent.Toast(message))
-            } finally {
-                _uiState.update { it.copy(importingModel = false) }
-            }
-        }
-    }
-
-    fun importModel(uri: Uri) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(importingModel = true) }
-            try {
-                val result = modelService.importModel(uri)
-                when (result) {
-                    is OperationResult.Success -> {
-                        // Update path immediately for visibility
-                        result.data.filePath.let { path ->
-                            _uiState.update { it.copy(modelPath = path) }
-                        }
-                        // Try to load the model
-                        val loadResult = modelService.activateManifest(result.data)
-                        when (loadResult) {
-                            is OperationResult.Success -> _events.emit(HomeEvent.Toast(loadResult.message))
-                            is OperationResult.Failure -> _events.emit(HomeEvent.Toast(loadResult.error))
-                        }
-                    }
-                    is OperationResult.Failure -> {
-                        _events.emit(HomeEvent.Toast(result.error))
-                    }
-                }
-            } finally {
-                _uiState.update { it.copy(importingModel = false) }
-            }
-        }
-    }
-
-    fun deleteManifest(manifest: ModelManifest) {
-        viewModelScope.launch {
-            val message = modelService.deleteManifest(manifest, removeFile = true)
-            if (_uiState.value.storedConfig?.modelPath == manifest.filePath) {
-                _uiState.update { it.copy(storedConfig = null, modelPath = "") }
-            }
-            _events.emit(HomeEvent.Toast(message))
-        }
-    }
-
-    fun activateManifest(manifest: ModelManifest) {
-        viewModelScope.launch {
-            val result = modelService.activateManifest(manifest)
-            when (result) {
-                is OperationResult.Success -> {
-                    _uiState.update {
-                        it.copy(
-                            modelPath = manifest.filePath,
-                            contextText = manifest.contextLength.takeIf { len -> len > 0 }?.toString() ?: it.contextText,
-                            detectedTemplateId = modelService.getDetectedTemplateId(manifest)
-                        )
-                    }
-                    _events.emit(HomeEvent.Toast(result.message))
-                }
-                is OperationResult.Failure -> {
-                    _events.emit(HomeEvent.Toast(result.error))
-                }
-            }
-        }
-    }
-
-    fun verifyManifest(manifest: ModelManifest) {
-        viewModelScope.launch {
-            val verified = modelService.verifyManifest(manifest)
-            _events.emit(HomeEvent.Toast(if (verified) "Checksum verified" else "File missing"))
-        }
-    }
-
-    fun importDocument(uri: Uri) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(indexing = true) }
-            val result = documentService.importDocument(uri)
-            when (result) {
-                is OperationResult.Success -> _events.emit(HomeEvent.Toast(result.message))
-                is OperationResult.Failure -> _events.emit(HomeEvent.Toast(result.error))
-            }
-            _uiState.update { it.copy(indexing = false) }
-        }
-    }
-
-    fun sendPrompt(
-        prompt: String,
-        onToken: (String) -> Unit,
-        onComplete: (String, EngineMetrics) -> Unit
-    ) {
-        val chatId = activeChatId.value ?: return
-
-        // Prevent race conditions - only one send operation per chat at a time
-        val existingJob = activeSendJobs[chatId]
-        if (existingJob?.isActive == true) {
-            // Silently ignore - user will see the existing operation complete
-            return
-        }
-
-        val job = viewModelScope.launch {
-            activeSendJobs[chatId] = this as kotlinx.coroutines.Job
-            try {
-                // KV state restore handled by repository during streaming
-
-                val state = _uiState.value
-                val history = runCatching { repository.listMessages(chatId) }.getOrDefault(emptyList())
-
-                // Insert user message with error recovery
-                runCatching {
-                    repository.insertMessage(
-                        com.peerchat.data.db.Message(
-                            chatId = chatId,
-                            role = "user",
-                            contentMarkdown = prompt,
-                            tokens = 0,
-                            ttfsMs = 0,
-                            tps = 0f,
-                            contextUsedPct = 0f,
-                            createdAt = System.currentTimeMillis(),
-                            metaJson = "{}"
-                        )
-                    )
-                }.onFailure { e ->
-                    _events.emit(HomeEvent.Toast("Failed to save message: ${e.message}"))
-                    return@launch
-                }
-
-                // RAG retrieval with error recovery
-                val retrieved = runCatching {
-                    retriever.retrieve(repository.database(), prompt, topK = 6)
-                }.getOrDefault(emptyList())
-
-                val ctx = runCatching { RagService.buildContext(retrieved) }.getOrDefault("")
-                val augmented = if (ctx.isNotBlank()) "$ctx\n\n$prompt" else prompt
-
-                val composition = memoize("prompt_composition_${chatId}_${state.sysPrompt.hashCode()}_${history.size}_${augmented.hashCode()}") {
-                    runCatching {
-                        promptComposer.compose(
-                            PromptComposer.Inputs(
-                                systemPrompt = state.sysPrompt.takeIf { it.isNotBlank() },
-                                history = history,
-                                nextUserContent = augmented,
-                                selectedTemplateId = state.selectedTemplateId,
-                                detectedTemplateId = state.detectedTemplateId
-                            )
-                        )
-                    }.getOrNull()
-                }
-
-                if (composition == null) {
-                    _events.emit(HomeEvent.Toast("Failed to compose prompt"))
-                    return@launch
-                }
-
-                val parser = ReasoningParser(onToken)
-
-                runCatching {
-                    modelRepository.streamWithCache(
-                        chatId = chatId,
-                        prompt = composition.prompt.text,
-                        systemPrompt = null,
-                        template = composition.template.id,
-                        temperature = state.temperature,
-                        topP = state.topP,
-                        topK = state.topK,
-                        maxTokens = state.maxTokens,
-                        stop = composition.prompt.stopSequences.toTypedArray()
-                    ).collect { event ->
-                        when (event) {
-                            is EngineStreamEvent.Token -> parser.handle(event.text)
-                            is EngineStreamEvent.Terminal -> {
-                                val parseResult = parser.result()
-                                val finalText = parseResult.visible
-                                val reasoningText = parseResult.reasoning
-                                onComplete(finalText, event.metrics)
-
-                                runCatching {
-                                    repository.insertMessage(
-                                        com.peerchat.data.db.Message(
-                                            chatId = chatId,
-                                            role = "assistant",
-                                            contentMarkdown = finalText,
-                                            tokens = event.metrics.generationTokens,
-                                            ttfsMs = event.metrics.ttfsMs.toLong(),
-                                            tps = event.metrics.tps.toFloat(),
-                                            contextUsedPct = (event.metrics.contextUsedPct / 100.0).toFloat().coerceIn(0f, 1f),
-                                            createdAt = System.currentTimeMillis(),
-                                            metaJson = buildAssistantMeta(
-                                                templateId = composition.template.id,
-                                                metrics = event.metrics,
-                                                reasoning = reasoningText.takeIf { it.isNotBlank() },
-                                                reasoningDurationMs = parseResult.reasoningDurationMs,
-                                                reasoningChars = parseResult.reasoningChars
-                                            )
-                                        )
-                                    )
-                                }.onFailure { e ->
-                                    _events.emit(HomeEvent.Toast("Failed to save response: ${e.message}"))
-                                }
-                            }
-                        }
-                    }
-                }.onFailure { e ->
-                    _events.emit(HomeEvent.Toast("Generation failed: ${e.message}"))
-                    // Clear cache on error
-                    runCatching { modelCache.clear(chatId) }
-                }
-
-            } catch (e: Exception) {
-                _events.emit(HomeEvent.Toast("Unexpected error: ${e.message}"))
-                // Clear cache on critical error
-                runCatching { modelCache.clear(chatId) }
-            } finally {
-                // Clean up active job reference
-                activeSendJobs.remove(chatId)
-            }
-        }
-
-        // Store the job reference (outside the launch block)
-        activeSendJobs[chatId] = job
-    }
-
-    private fun buildAssistantMeta(
-        templateId: String,
-        metrics: EngineMetrics,
-        reasoning: String?,
-        reasoningDurationMs: Long?,
-        reasoningChars: Int
-    ): String {
-        val metricsJson = JSONObject().apply {
-            put("promptTokens", metrics.promptTokens)
-            put("generationTokens", metrics.generationTokens)
-            put("ttfsMs", metrics.ttfsMs)
-            put("tps", metrics.tps)
-            put("contextUsedPct", metrics.contextUsedPct)
-            put("stopReason", metrics.stopReason)
-            put("stopSequence", metrics.stopSequence)
-            put("truncated", metrics.truncated)
-            put("reasoningChars", reasoningChars)
-            reasoningDurationMs?.let { put("reasoningDurationMs", it) }
-        }
-        return JSONObject().apply {
-            put("templateId", templateId)
-            put("metrics", metricsJson)
-            reasoning?.let { put("reasoning", it) }
-        }.toString()
-    }
+    // ------------------------------------------------------------------------
+    // Dialog / navigation helpers
+    // ------------------------------------------------------------------------
 
     fun showNewChatDialog() {
         _uiState.update { it.copy(dialogState = DialogState.NewChat) }
@@ -814,8 +331,20 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(dialogState = DialogState.NewFolder) }
     }
 
+    fun showRenameFolderDialog(folderId: Long, currentName: String) {
+        _uiState.update { it.copy(dialogState = DialogState.RenameFolder(folderId, currentName)) }
+    }
+
+    fun showDeleteFolderDialog(folderId: Long, folderName: String) {
+        _uiState.update { it.copy(dialogState = DialogState.DeleteFolder(folderId, folderName)) }
+    }
+
     fun showRenameChatDialog(chatId: Long, currentTitle: String) {
         _uiState.update { it.copy(dialogState = DialogState.RenameChat(chatId, currentTitle)) }
+    }
+
+    fun showDeleteChatDialog(chatId: Long, currentTitle: String) {
+        _uiState.update { it.copy(dialogState = DialogState.DeleteChat(chatId, currentTitle)) }
     }
 
     fun showMoveChatDialog(chatId: Long) {
@@ -830,15 +359,253 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(dialogState = DialogState.None) }
     }
 
-    // Memory leak prevention - cleanup when ViewModel is destroyed
-    override fun onCleared() {
-        super.onCleared()
-        // Cancel all active send jobs
-        activeSendJobs.values.forEach { it.cancel() }
-        activeSendJobs.clear()
-        // Cancel search job if active
-        searchJob?.cancel()
-        // Clear memoization cache
-        memoizationCache.clear()
+    fun selectFolder(folderId: Long?) {
+        selectedFolderId.value = folderId
+        _uiState.update {
+            it.copy(
+                navigation = it.navigation.copy(
+                    selectedFolderId = folderId,
+                    chats = emptyList(),
+                    activeChatId = null
+                )
+            )
+        }
+    }
+
+    fun focusChat(chatId: Long, folderId: Long? = null) {
+        viewModelScope.launch {
+            val resolvedFolder: Long? = if (folderId != null) {
+                folderId
+            } else {
+                val chat = withContext(Dispatchers.IO) { repository.getChat(chatId) }
+                if (chat == null) {
+                    emitToast("Chat not found", true)
+                    return@launch
+                }
+                chat.folderId
+            }
+            selectedFolderId.value = resolvedFolder
+            _uiState.update {
+                it.copy(
+                    navigation = it.navigation.copy(
+                        selectedFolderId = resolvedFolder,
+                        activeChatId = chatId
+                    )
+                )
+            }
+            _events.emit(HomeEvent.SelectChat(chatId))
+        }
+    }
+
+    fun importDocument(uri: Uri?) {
+        if (uri == null) return
+        viewModelScope.launch {
+            updateDocumentState { it.copy(indexing = true) }
+            val result = documentService.importDocument(uri)
+            updateDocumentState { it.copy(indexing = false) }
+            when (result) {
+                is OperationResult.Success -> emitToast(result.message, false)
+                is OperationResult.Failure -> emitToast(result.error, true)
+            }
+        }
+    }
+
+    fun importModel(uri: Uri?) {
+        if (uri == null) return
+        viewModelScope.launch {
+            updateModelState { it.copy(importingModel = true) }
+            val result = modelRepository.importModel(uri)
+            updateModelState { it.copy(importingModel = false) }
+            when (result) {
+                is OperationResult.Success -> {
+                    val manifest = result.data
+                    updateModelState { state ->
+                        state.copy(modelPath = manifest.filePath)
+                    }
+                    emitToast(result.message, false)
+                }
+                is OperationResult.Failure -> emitToast(result.error, true)
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Model management actions
+    // ------------------------------------------------------------------------
+
+    fun updateModelPath(path: String) = updateModelState { it.copy(modelPath = path) }
+
+    fun updateThreadText(value: String) = updateModelState { it.copy(threadText = value) }
+
+    fun updateContextText(value: String) = updateModelState { it.copy(contextText = value) }
+
+    fun updateGpuText(value: String) = updateModelState { it.copy(gpuText = value) }
+
+    fun updateUseVulkan(useVulkan: Boolean) =
+        updateModelState { it.copy(useVulkan = useVulkan) }
+
+    fun loadModel() {
+        val config = parseConfigFromState() ?: return
+        viewModelScope.launch { loadModelInternal(config) }
+    }
+
+    fun unloadModel() {
+        viewModelScope.launch {
+            updateModelState { it.copy(importingModel = true) }
+            val message = runCatching { modelRepository.unloadModel() }
+                .onFailure { emitToast("Failed to unload model: ${it.message}", true) }
+                .getOrElse { "" }
+            updateModelState {
+                it.copy(
+                    importingModel = false,
+                    storedConfig = null,
+                    modelPath = "",
+                    threadText = "6",
+                    contextText = "4096",
+                    gpuText = "20"
+                )
+            }
+            if (message.isNotBlank()) emitToast(message, false)
+        }
+    }
+
+    fun activateManifest(manifest: ModelManifest) {
+        viewModelScope.launch {
+            updateModelState { it.copy(importingModel = true, modelPath = manifest.filePath) }
+            val result = runCatching { modelRepository.activateManifest(manifest) }
+                .getOrElse {
+                    updateModelState { state -> state.copy(importingModel = false) }
+                    emitToast("Failed to activate model: ${it.message}", true)
+                    return@launch
+                }
+
+            when (result) {
+                is OperationResult.Success -> {
+                    refreshStoredConfig()
+                    emitToast("Model loaded: ${result.data.name}", false)
+                }
+                is OperationResult.Failure -> emitToast(result.error, true)
+            }
+
+            updateModelState { it.copy(importingModel = false) }
+        }
+    }
+
+    fun deleteManifest(manifest: ModelManifest, removeFile: Boolean = false) {
+        viewModelScope.launch {
+            val message = runCatching {
+                modelRepository.deleteManifest(manifest, removeFile)
+            }.onFailure {
+                emitToast("Delete failed: ${it.message}", true)
+            }.getOrNull()
+
+            if (!message.isNullOrBlank()) emitToast(message, false)
+
+            val currentPath = uiState.value.model.modelPath
+            if (manifest.filePath == currentPath) {
+                updateModelState {
+                    it.copy(
+                        modelPath = "",
+                        storedConfig = null
+                    )
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------------
+
+    private suspend fun loadModelInternal(config: StoredEngineConfig) {
+        updateModelState { it.copy(importingModel = true) }
+        val result = modelRepository.loadModel(config)
+        updateModelState { it.copy(importingModel = false) }
+
+        when (result) {
+            is OperationResult.Success -> {
+                refreshStoredConfig()
+                emitToast(result.message, false)
+            }
+            is OperationResult.Failure -> emitToast(result.error, true)
+        }
+    }
+
+    private fun refreshStoredConfig() {
+        val stored = ModelConfigStore.load(appContext)
+        if (stored != null) {
+            updateModelState {
+                it.copy(
+                    storedConfig = stored,
+                    modelPath = stored.modelPath,
+                    threadText = stored.threads.toString(),
+                    contextText = stored.contextLength.toString(),
+                    gpuText = stored.gpuLayers.toString(),
+                    useVulkan = stored.useVulkan
+                )
+            }
+        } else {
+            updateModelState {
+                it.copy(
+                    storedConfig = null,
+                    modelPath = "",
+                    threadText = "6",
+                    contextText = "4096",
+                    gpuText = "20"
+                )
+            }
+        }
+    }
+
+    private fun parseConfigFromState(): StoredEngineConfig? {
+        val state = uiState.value.model
+        val path = state.modelPath.trim()
+        if (path.isBlank()) {
+            emitToast("Model path is required", true)
+            return null
+        }
+        val threads = state.threadText.toIntOrNull()
+        val context = state.contextText.toIntOrNull()
+        val gpu = state.gpuText.toIntOrNull()
+
+        if (threads == null || threads <= 0) {
+            emitToast("Invalid thread count", true)
+            return null
+        }
+        if (context == null || context <= 0) {
+            emitToast("Invalid context length", true)
+            return null
+        }
+        if (gpu == null || gpu < 0) {
+            emitToast("Invalid GPU layer count", true)
+            return null
+        }
+        if (!File(path).exists()) {
+            emitToast("Model file not found", true)
+            return null
+        }
+        return StoredEngineConfig(
+            modelPath = path,
+            threads = threads,
+            contextLength = context,
+            gpuLayers = gpu,
+            useVulkan = state.useVulkan
+        )
+    }
+
+    private inline fun updateModelState(
+        crossinline reducer: (ModelState) -> ModelState
+    ) {
+        _uiState.update { current ->
+            current.copy(model = reducer(current.model))
+        }
+    }
+
+    private inline fun updateDocumentState(
+        crossinline reducer: (DocumentState) -> DocumentState
+    ) {
+        _uiState.update { current ->
+            current.copy(documents = reducer(current.documents))
+        }
     }
 }

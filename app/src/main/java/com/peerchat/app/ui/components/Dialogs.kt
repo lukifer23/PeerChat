@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
@@ -20,6 +21,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,15 +37,19 @@ import androidx.work.WorkInfo
 import com.peerchat.data.db.ModelManifest
 import com.peerchat.app.engine.DefaultModel
 import com.peerchat.app.engine.DefaultModels
+import com.peerchat.app.ui.ChatUiState
 import com.peerchat.app.ui.HomeUiState
 import com.peerchat.app.ui.TemplateOption
+import com.peerchat.engine.EngineRuntime
 import com.peerchat.templates.TemplateCatalog
+import com.peerchat.app.util.FormatUtils.formatBytes
 import java.io.File
 import java.util.Locale
 
 @Composable
 fun SettingsDialog(
-    state: HomeUiState,
+    homeState: HomeUiState,
+    chatState: ChatUiState,
     onDismiss: () -> Unit,
     onSysPromptChange: (String) -> Unit,
     onTemperatureChange: (Float) -> Unit,
@@ -65,41 +71,43 @@ fun SettingsDialog(
         title = "Settings",
         onDismiss = onDismiss,
         content = {
+            val modelState = homeState.model
+            val cacheStats = modelState.cacheStats
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Text("Chat Settings", style = MaterialTheme.typography.titleMedium)
                 OutlinedTextField(
-                    value = state.sysPrompt,
+                    value = chatState.sysPrompt,
                     onValueChange = onSysPromptChange,
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("System Prompt") }
                 )
                 OutlinedTextField(
-                    value = state.temperature.toString(),
-                    onValueChange = { it.toFloatOrNull()?.let(onTemperatureChange) },
+                    value = chatState.temperature.toString(),
+                    onValueChange = { value -> value.toFloatOrNull()?.let(onTemperatureChange) },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Temperature") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                 )
                 OutlinedTextField(
-                    value = state.topP.toString(),
-                    onValueChange = { it.toFloatOrNull()?.let(onTopPChange) },
+                    value = chatState.topP.toString(),
+                    onValueChange = { value -> value.toFloatOrNull()?.let(onTopPChange) },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("top_p") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                 )
                 NumericField(
                     label = "top_k",
-                    text = state.topK.toString(),
+                    text = chatState.topK.toString(),
                     onValueChange = { value -> value.toIntOrNull()?.let(onTopKChange) }
                 )
                 NumericField(
                     label = "Max tokens",
-                    text = state.maxTokens.toString(),
+                    text = chatState.maxTokens.toString(),
                     onValueChange = { value -> value.toIntOrNull()?.let(onMaxTokensChange) }
                 )
                 HorizontalDivider()
                 Text("Chat Template", style = MaterialTheme.typography.titleMedium)
-                val detected = state.detectedTemplateId
+                val detected = chatState.detectedTemplateId ?: modelState.detectedTemplateId
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SuggestionChip(
                         onClick = { onTemplateSelect(null) },
@@ -107,7 +115,7 @@ fun SettingsDialog(
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    state.templates.forEach { opt ->
+                    for (opt in chatState.templates) {
                         SuggestionChip(
                             onClick = { onTemplateSelect(opt.id) },
                             label = { Text(opt.label) }
@@ -116,74 +124,85 @@ fun SettingsDialog(
                 }
                 HorizontalDivider()
                 Text("Engine", style = MaterialTheme.typography.titleMedium)
+                StatusRow(status = modelState.engineStatus, metrics = modelState.engineMetrics)
+                if (modelState.importingModel) {
+                    InlineLoadingIndicator(
+                        message = "Applying model configuration…",
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
                 OutlinedTextField(
-                    value = state.modelPath,
+                    value = modelState.modelPath,
                     onValueChange = onModelPathChange,
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Model Path") },
                     singleLine = true
                 )
-                NumericField("Threads", state.threadText, onThreadChange)
-                NumericField("Context", state.contextText, onContextChange)
-                NumericField("GPU Layers", state.gpuText, onGpuChange)
+                NumericField("Threads", modelState.threadText, onThreadChange)
+                NumericField("Context", modelState.contextText, onContextChange)
+                NumericField("GPU Layers", modelState.gpuText, onGpuChange)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text("Use Vulkan")
-                    Switch(checked = state.useVulkan, onCheckedChange = onUseVulkanChange)
+                    Switch(
+                        checked = modelState.useVulkan,
+                        onCheckedChange = onUseVulkanChange,
+                        enabled = !modelState.importingModel
+                    )
                 }
+                val canLoad = modelState.modelPath.isNotBlank() && !modelState.importingModel
+                val canUnload = modelState.engineStatus is EngineRuntime.EngineStatus.Loaded && !modelState.importingModel
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onLoadModel, enabled = state.modelPath.isNotBlank()) { Text("Load Model") }
-                    Button(onClick = onUnloadModel, enabled = state.storedConfig != null) { Text("Unload") }
+                    Button(onClick = onLoadModel, enabled = canLoad) {
+                        Text(if (modelState.importingModel) "Working…" else "Load Model")
+                    }
+                    Button(onClick = onUnloadModel, enabled = canUnload) { Text("Unload") }
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("KV Cache", style = MaterialTheme.typography.titleMedium)
+                    Text("Metrics & Cache", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Hits ${state.cacheStats.hits} • Misses ${state.cacheStats.misses} • Evictions ${state.cacheStats.evictions}",
+                        "KV Cache: ${cacheStats.hits} hits, ${cacheStats.misses} misses, ${cacheStats.evictions} evictions",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        "Disk usage ${formatBytes(state.cacheStats.bytes)}",
+                        "Cache disk usage: ${formatBytes(cacheStats.bytes)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (modelState.engineMetrics.ttfsMs > 0) {
+                        Text(
+                            "Last generation: TTFS ${modelState.engineMetrics.ttfsMs}ms • TPS ${String.format("%.1f", modelState.engineMetrics.tps)} • Context ${String.format("%.1f", modelState.engineMetrics.contextUsedPct)}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 HorizontalDivider()
-                Text("Available Models", style = MaterialTheme.typography.titleMedium)
-                if (state.manifests.isEmpty()) {
-                    EmptyListHint("No manifests recorded yet.")
+                Text("Installed Models", style = MaterialTheme.typography.titleMedium)
+                val activePath = modelState.storedConfig?.modelPath ?: modelState.modelPath
+                if (modelState.manifests.isEmpty()) {
+                    EmptyListHint("No models installed yet.")
                 } else {
-                    LazyColumn(Modifier.heightIn(max = 220.dp)) {
-                        items(state.manifests) { manifest ->
-                            val isActive = manifest.filePath == state.storedConfig?.modelPath
-                            val fileExists = File(manifest.filePath).exists()
-                            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                                Text(
-                                    manifest.name + if (isActive) " (active)" else "",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    "${manifest.family} • ${formatBytes(manifest.sizeBytes)}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                                if (!fileExists) {
-                                    Text(
-                                        "File missing",
-                                        color = MaterialTheme.colorScheme.error,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    TextButton(onClick = { onSelectManifest(manifest) }) { Text("Activate") }
-                                    TextButton(onClick = { onDeleteManifest(manifest) }) { Text("Delete") }
-                                }
-                            }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        modelState.manifests.forEach { manifest ->
+                            ModelManifestRow(
+                                manifest = manifest,
+                                isActive = manifest.filePath == activePath,
+                                isBusy = modelState.importingModel,
+                                onLoad = { onSelectManifest(manifest) },
+                                onVerify = null,
+                                onDelete = { onDeleteManifest(manifest) }
+                            )
                         }
                     }
                 }
+                HorizontalDivider()
+                Text("Catalog Downloads", style = MaterialTheme.typography.titleMedium)
+                EmptyListHint("Use catalog entries below to download curated defaults.")
             }
         }
     )
@@ -193,6 +212,7 @@ fun SettingsDialog(
 fun ModelsDialog(
     manifests: List<ModelManifest>,
     onDismiss: () -> Unit,
+    onActivate: ((ModelManifest) -> Unit)? = null,
 ) {
     val context = LocalContext.current
 
@@ -209,12 +229,57 @@ fun ModelsDialog(
                         manifest = manifest,
                         workInfo = workInfo,
                         onDownload = { com.peerchat.app.engine.ModelDownloadManager.enqueue(context, model) },
-                        onActivate = null, // TODO: Pass activate callback
+                        onActivate = manifest?.let { { onActivate?.invoke(it) } },
                         onOpenCard = { openUrl(context, model.cardUrl) }
                     )
                     HorizontalDivider()
                 }
             }
+        }
+    )
+}
+
+@Composable
+fun RenameFolderDialog(
+    currentName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(TextFieldValue(currentName)) }
+
+    AppDialog(
+        title = "Rename Folder",
+        onDismiss = onDismiss,
+        confirmText = "Save",
+        onConfirm = { onConfirm(name.text) },
+        dismissText = "Cancel",
+        content = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Folder name") }
+            )
+        }
+    )
+}
+
+@Composable
+fun DeleteFolderDialog(
+    folderName: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val trimmed = folderName.trim()
+    val label = if (trimmed.isEmpty()) "this folder" else "folder \"$trimmed\""
+
+    AppDialog(
+        title = "Delete Folder",
+        onDismiss = onDismiss,
+        confirmText = "Delete",
+        onConfirm = onConfirm,
+        dismissText = "Cancel",
+        content = {
+            Text("Delete $label? Chats remain available under All Chats.")
         }
     )
 }
@@ -298,6 +363,27 @@ fun NewFolderDialog(
 }
 
 @Composable
+fun DeleteChatDialog(
+    chatTitle: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val trimmed = chatTitle.trim()
+    val label = if (trimmed.isEmpty()) "this chat" else "chat \"$trimmed\""
+
+    AppDialog(
+        title = "Delete Chat",
+        onDismiss = onDismiss,
+        confirmText = "Delete",
+        onConfirm = onConfirm,
+        dismissText = "Cancel",
+        content = {
+            Text("Delete $label? This permanently removes its messages.")
+        }
+    )
+}
+
+@Composable
 fun NewChatDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -350,6 +436,15 @@ fun ModelCatalogRow(
     onActivate: (() -> Unit)?,
     onOpenCard: () -> Unit,
 ) {
+    val state = workInfo?.state
+    LaunchedEffect(state) {
+        when (state) {
+            WorkInfo.State.SUCCEEDED -> showSuccessToast("Downloaded ${model.name}")
+            WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> showErrorToast("Download failed for ${model.name}")
+            else -> Unit
+        }
+    }
+
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(model.name, style = MaterialTheme.typography.bodyMedium)
         Text(model.description, style = MaterialTheme.typography.bodySmall)
@@ -383,6 +478,67 @@ fun ModelCatalogRow(
     }
 }
 
+@Composable
+fun ModelManifestRow(
+    manifest: ModelManifest,
+    isActive: Boolean = false,
+    isBusy: Boolean = false,
+    onLoad: (() -> Unit)? = null,
+    onVerify: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+) {
+    ElevatedCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(manifest.name, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                File(manifest.filePath).name,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                "${formatBytes(manifest.sizeBytes)} • ctx ${manifest.contextLength}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (isActive) {
+                AssistChip(
+                    onClick = {},
+                    enabled = false,
+                    label = { Text("Active") }
+                )
+            }
+            if (isBusy) {
+                InlineLoadingIndicator(message = "Working…")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                onLoad?.let {
+                    TextButton(
+                        onClick = it,
+                        enabled = !isBusy && !isActive
+                    ) { Text(if (isActive) "Loaded" else "Activate") }
+                }
+                onVerify?.let {
+                    TextButton(
+                        onClick = it,
+                        enabled = !isBusy
+                    ) { Text("Verify") }
+                }
+                onDelete?.let {
+                    TextButton(
+                        onClick = it,
+                        enabled = !isBusy && !isActive
+                    ) { Text("Delete") }
+                }
+            }
+        }
+    }
+}
+
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0) return "0 B"
     val units = arrayOf("B", "KB", "MB", "GB", "TB")
@@ -398,3 +554,4 @@ fun openUrl(context: android.content.Context, url: String) {
         context.startActivity(intent)
     }
 }
+

@@ -41,19 +41,67 @@ object ModelStorage {
         return null
     }
 
+    /**
+     * Sanitizes a filename to prevent path traversal attacks.
+     * Removes path separators, relative path components, and other dangerous characters.
+     *
+     * @param name The original filename.
+     * @return A sanitized filename safe for use in file operations.
+     */
     private fun sanitizeFileName(name: String): String {
-        return name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        // Remove path separators and relative path components
+        var sanitized = name
+            .replace(Regex("[\\\\/]"), "_") // Remove path separators
+            .replace(Regex("\\.\\.+"), "_") // Remove .. sequences
+            .replace(Regex("^\\."), "") // Remove leading dot
+            .replace(Regex("\\.$"), "") // Remove trailing dot
+        
+        // Remove dangerous characters but preserve safe ones
+        sanitized = sanitized.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        
+        // Limit length and prevent empty names
+        sanitized = sanitized.take(255).ifBlank { "model_file" }
+        
+        // Ensure it doesn't start or end with special characters
+        return sanitized.trimStart('_', '-').trimEnd('_', '-').ifBlank { "model_file" }
     }
 
+    /**
+     * Atomically copies input stream to destination file.
+     * Uses a temporary file and atomic rename to ensure file integrity.
+     *
+     * @param input The input stream to copy.
+     * @param dest The destination file (must be in a safe directory).
+     */
     private fun copyToFile(input: InputStream, dest: File) {
-        FileOutputStream(dest).use { out ->
-            val buffer = ByteArray(1 shl 16)
-            while (true) {
-                val read = input.read(buffer)
-                if (read <= 0) break
-                out.write(buffer, 0, read)
+        // Validate destination is in expected directory
+        val parent = dest.parentFile ?: throw IllegalArgumentException("Invalid destination path")
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw SecurityException("Cannot create destination directory")
+        }
+        
+        // Use atomic write: write to temp file, then rename
+        val tempFile = File(parent, "${dest.name}.tmp.${System.currentTimeMillis()}")
+        try {
+            FileOutputStream(tempFile).use { out ->
+                val buffer = ByteArray(1 shl 16)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    out.write(buffer, 0, read)
+                }
+                out.flush()
+                out.fd.sync() // Force sync to disk
             }
-            out.flush()
+            
+            // Atomic rename
+            if (!tempFile.renameTo(dest)) {
+                throw SecurityException("Failed to atomically move file to destination")
+            }
+        } catch (e: Exception) {
+            // Cleanup temp file on error
+            runCatching { tempFile.delete() }
+            throw e
         }
     }
 }

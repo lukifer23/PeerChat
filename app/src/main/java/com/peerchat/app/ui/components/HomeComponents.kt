@@ -7,22 +7,24 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AssistChip
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.MoreVert
 import com.peerchat.engine.EngineMetrics
 import com.peerchat.engine.EngineRuntime
 import java.util.Locale
@@ -104,93 +106,28 @@ fun ColumnScope.HomeListRow(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeTopBar(
-    docImportInProgress: Boolean,
-    modelImportInProgress: Boolean,
-    compact: Boolean = false,
     onNewChat: () -> Unit,
-    onImportDoc: () -> Unit,
-    onImportModel: () -> Unit,
+    onOpenDocuments: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDocuments: () -> Unit,
 ) {
-    androidx.compose.material3.TopAppBar(
+    TopAppBar(
         title = { Text("PeerChat") },
         actions = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (!compact) {
-                    HomeActionChip(label = "New Chat", onClick = onNewChat)
-                    HomeActionChip(
-                        label = if (docImportInProgress) "Importing…" else "Import Doc",
-                        enabled = !docImportInProgress,
-                        onClick = onImportDoc
-                    )
-                    HomeActionChip(
-                        label = if (modelImportInProgress) "Importing…" else "Import Model",
-                        enabled = !modelImportInProgress,
-                        onClick = onImportModel
-                    )
-                    HomeActionChip(label = "Documents", onClick = onOpenDocuments)
-                    HomeActionChip(label = "Models", onClick = onOpenModels)
-                }
-                androidx.compose.material3.IconButton(onClick = onOpenSettings) {
-                    androidx.compose.material3.Icon(
-                        androidx.compose.material.icons.Icons.Default.Settings,
-                        contentDescription = "Settings"
-                    )
-                }
-
-                // Overflow menu to ensure actions stay accessible on compact widths
-                val (menuOpen, setMenuOpen) = remember { mutableStateOf(false) }
-                androidx.compose.material3.IconButton(onClick = { setMenuOpen(true) }) {
-                    androidx.compose.material3.Icon(
-                        androidx.compose.material.icons.Icons.Default.MoreVert,
-                        contentDescription = "More"
-                    )
-                }
-                androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { setMenuOpen(false) }) {
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("New Chat") },
-                        onClick = { setMenuOpen(false); onNewChat() }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Import Doc") },
-                        onClick = { setMenuOpen(false); onImportDoc() },
-                        enabled = !docImportInProgress
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Import Model") },
-                        onClick = { setMenuOpen(false); onImportModel() },
-                        enabled = !modelImportInProgress
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Documents") },
-                        onClick = { setMenuOpen(false); onOpenDocuments() }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Models") },
-                        onClick = { setMenuOpen(false); onOpenModels() }
-                    )
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { Text("Settings") },
-                        onClick = { setMenuOpen(false); onOpenSettings() }
-                    )
-                }
+            IconButton(onClick = onNewChat) {
+                Icon(Icons.Default.Add, contentDescription = "New Chat")
+            }
+            IconButton(onClick = onOpenDocuments) {
+                Icon(Icons.Default.List, contentDescription = "Documents")
+            }
+            IconButton(onClick = onOpenModels) {
+                Icon(Icons.Default.Build, contentDescription = "Models")
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Default.Settings, contentDescription = "Settings")
             }
         }
     )
-}
-
-@Composable
-private fun HomeActionChip(
-    label: String,
-    enabled: Boolean = true,
-    onClick: () -> Unit,
-) {
-    AssistChip(onClick = onClick, enabled = enabled, label = { Text(label) })
 }
 
 private fun statusLabel(status: EngineRuntime.EngineStatus): String = when (status) {

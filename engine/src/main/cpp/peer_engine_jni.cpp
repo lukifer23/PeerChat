@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <iomanip>
@@ -52,6 +53,7 @@ struct EngineState {
     EngineMetrics metrics;
     StopReason stop_reason = StopReason::None;
     std::string stop_sequence;
+    std::atomic<bool> should_abort{false};
 };
 
 struct StopBuffer {
@@ -716,6 +718,13 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
     }
 
+    ensure_backend_init();
+
+    if (!llama_model_has_embeddings(g_state.model)) {
+        LOGE("model does not expose embeddings");
+        return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
+    }
+
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = g_state.n_ctx;
     cparams.n_threads = g_state.n_threads;
@@ -726,6 +735,8 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
         LOGE("failed to create embeddings context");
         return static_cast<jobjectArray>(env->NewObjectArray(0, floatArrayClass, nullptr));
     }
+
+    llama_set_n_threads(ectx, g_state.n_threads, g_state.n_threads);
 
     const llama_vocab * vocab = llama_model_get_vocab(g_state.model);
     jsize count = jTexts ? env->GetArrayLength(jTexts) : 0;
@@ -743,9 +754,14 @@ Java_com_peerchat_engine_EngineNative_embed(JNIEnv * env, jobject thiz, jobjectA
             embeddings.emplace_back();
             continue;
         }
+        if (tokens.empty()) {
+            embeddings.emplace_back();
+            continue;
+        }
 
         llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
         if (llama_encode(ectx, batch) != 0) {
+            LOGE("llama_encode failed for embeddings");
             embeddings.emplace_back();
             continue;
         }

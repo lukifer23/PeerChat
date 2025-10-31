@@ -1,15 +1,14 @@
 package com.peerchat.app.ui
 
 import android.net.Uri
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.peerchat.app.data.OperationResult
 import com.peerchat.app.data.PeerChatRepository
-import com.peerchat.app.docs.OcrService
 import com.peerchat.app.engine.DocumentService
-import com.peerchat.app.ui.components.GlobalToastManager
 import com.peerchat.data.db.Document
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,23 +17,23 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import javax.inject.Inject
-
-data class DocumentUiState(
-    val documents: List<Document> = emptyList(),
-    val isIndexing: Boolean = false,
-    val isProcessingOcr: Boolean = false
-)
+import kotlinx.coroutines.withContext
 
 @HiltViewModel
 class DocumentViewModel @Inject constructor(
     private val repository: PeerChatRepository,
-    private val documentService: DocumentService,
-    private val ocrService: OcrService
-) : ViewModel() {
+    private val documentService: DocumentService
+) : BaseViewModel() {
 
-    private val _uiState = MutableStateFlow(DocumentUiState())
-    val uiState: StateFlow<DocumentUiState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow(DocumentsUiState())
+    val uiState: StateFlow<DocumentsUiState> = _uiState.asStateFlow()
+
+    private val _events = MutableSharedFlow<DocumentEvent>()
+    val events = _events.asSharedFlow()
+
+    override fun emitToast(message: String, isError: Boolean) {
+        _events.tryEmit(DocumentEvent.Toast(message, isError))
+    }
 
     init {
         observeDocuments()
@@ -42,75 +41,57 @@ class DocumentViewModel @Inject constructor(
 
     private fun observeDocuments() {
         viewModelScope.launch {
-            repository.observeDocuments().collectLatest { documents ->
-                _uiState.update { it.copy(documents = documents) }
+            repository.observeDocuments().collectLatest { docs ->
+                _uiState.update { it.copy(documents = docs) }
             }
         }
     }
 
-    fun importDocument(uri: Uri) {
-        _uiState.update { it.copy(isIndexing = true) }
+    fun importDocument(uri: Uri?) {
+        if (uri == null) return
         viewModelScope.launch {
-            try {
-                when (val result = documentService.importDocument(uri)) {
-                    is OperationResult.Success -> {
-                        GlobalToastManager.showToast("Document imported and indexed")
-                    }
-                    is OperationResult.Failure -> {
-                        GlobalToastManager.showToast("Import failed: ${result.error}", isError = true)
-                    }
-                }
-            } catch (e: Exception) {
-                GlobalToastManager.showToast("Import error: ${e.message}", isError = true)
-            } finally {
-                _uiState.update { it.copy(isIndexing = false) }
+            _uiState.update { it.copy(importInProgress = true) }
+            val result = withContext(Dispatchers.IO) { documentService.importDocument(uri) }
+            _uiState.update { it.copy(importInProgress = false) }
+            when (result) {
+                is OperationResult.Success -> emitToast(result.message, false)
+                is OperationResult.Failure -> emitToast(result.error, true)
             }
         }
     }
 
-    fun reindexDocument(document: Document) {
-        _uiState.update { it.copy(isIndexing = true) }
+    fun reindex(document: Document) {
         viewModelScope.launch {
-            try {
-                when (val result = documentService.reindexDocument(document)) {
-                    is OperationResult.Success -> {
-                        GlobalToastManager.showToast("Document re-indexed")
-                    }
-                    is OperationResult.Failure -> {
-                        GlobalToastManager.showToast("Re-index failed: ${result.error}", isError = true)
-                    }
-                }
-            } catch (e: Exception) {
-                GlobalToastManager.showToast("Re-index error: ${e.message}", isError = true)
-            } finally {
-                _uiState.update { it.copy(isIndexing = false) }
+            _uiState.update { it.copy(reindexingIds = it.reindexingIds + document.id) }
+            val result = withContext(Dispatchers.IO) { documentService.reindexDocument(document) }
+            _uiState.update { it.copy(reindexingIds = it.reindexingIds - document.id) }
+            when (result) {
+                is OperationResult.Success -> emitToast(result.message, false)
+                is OperationResult.Failure -> emitToast(result.error, true)
             }
         }
     }
 
-    fun processImageForOcr(uri: Uri) {
-        _uiState.update { it.copy(isProcessingOcr = true) }
+    fun delete(document: Document) {
         viewModelScope.launch {
-            try {
-                // Note: This is a simplified version. In a real implementation,
-                // we'd need to create a proper DocumentService method for OCR
-                GlobalToastManager.showToast("OCR processing not yet implemented", isError = true)
-            } catch (e: Exception) {
-                GlobalToastManager.showToast("OCR error: ${e.message}", isError = true)
-            } finally {
-                _uiState.update { it.copy(isProcessingOcr = false) }
+            _uiState.update { it.copy(deletingIds = it.deletingIds + document.id) }
+            val result = withContext(Dispatchers.IO) { documentService.deleteDocument(document.id) }
+            _uiState.update { it.copy(deletingIds = it.deletingIds - document.id) }
+            when (result) {
+                is OperationResult.Success -> emitToast(result.message, false)
+                is OperationResult.Failure -> emitToast(result.error, true)
             }
         }
     }
 
-    fun deleteDocument(document: Document) {
-        viewModelScope.launch {
-            try {
-                repository.deleteDocument(document.id)
-                GlobalToastManager.showToast("Document deleted")
-            } catch (e: Exception) {
-                GlobalToastManager.showToast("Delete error: ${e.message}", isError = true)
-            }
-        }
+    data class DocumentsUiState(
+        val documents: List<Document> = emptyList(),
+        val reindexingIds: Set<Long> = emptySet(),
+        val deletingIds: Set<Long> = emptySet(),
+        val importInProgress: Boolean = false,
+    )
+
+    sealed class DocumentEvent {
+        data class Toast(val message: String, val isError: Boolean = false) : DocumentEvent()
     }
 }
