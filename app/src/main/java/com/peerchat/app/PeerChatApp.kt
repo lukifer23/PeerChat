@@ -24,8 +24,6 @@ class PeerChatApp : Application() {
         Logger.init(this)
         ModelDownloadManager.scheduleMaintenance(this)
         
-        // Configure Android embedding service for RAG
-        // This will be done when services are injected in ViewModels
 
         // Initialize performance monitoring in debug builds
         if (BuildConfig.DEBUG) {
